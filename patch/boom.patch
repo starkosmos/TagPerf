@@ -22,10 +22,27 @@ index 05821c52..dd1c9032 100644
    val frontendStr = outer.frontend.module.toString
    val coreStr = core.toString
 diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
-index 0f8d39e3..b084093a 100644
+index 0f8d39e3..f5c55ca0 100644
 --- a/src/main/scala/exu/core.scala
 +++ b/src/main/scala/exu/core.scala
-@@ -1492,4 +1492,48 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+@@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
+ import freechips.rocketchip.rocket.Instructions._
+ import freechips.rocketchip.tile.{TraceBundle}
+ import freechips.rocketchip.rocket.{Causes, PRV, TracedInstruction}
+-import freechips.rocketchip.util.{Str, UIntIsOneOf, CoreMonitorBundle}
++import freechips.rocketchip.util.{Str, UIntIsOneOf, CoreMonitorBundle, PmSignals}
+ import freechips.rocketchip.devices.tilelink.{PLICConsts, CLINTConsts}
+ 
+ import boom.common._
+@@ -61,6 +61,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+     val ptw_tlb = new freechips.rocketchip.rocket.TLBPTWIO()
+     val trace = Output(new TraceBundle)
+     val fcsr_rm = UInt(freechips.rocketchip.tile.FPConstants.RM_SZ.W)
++    val pm = Output(new PmSignals)
+   })
+ 
+   io.ptw_tlb := DontCare
+@@ -1492,4 +1493,48 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
    } else {
      io.ifu.debug_ftq_idx := DontCare
    }
