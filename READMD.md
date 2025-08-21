@@ -11,7 +11,7 @@ update submodules and prepare working environment.
 ```
 git submodule update --init
 cd vivado-risc-v
-make apt install
+make apt-install
 make update-submodules
 ```
 To get internal signals from core and PIDs from Linux kernel,
