@@ -1,0 +1,76 @@
+diff --git a/src/main/scala/common/tile.scala b/src/main/scala/common/tile.scala
+index 05821c52..dd1c9032 100644
+--- a/src/main/scala/common/tile.scala
++++ b/src/main/scala/common/tile.scala
+@@ -6,7 +6,7 @@
+ package boom.common
+ 
+ import chisel3._
+-import chisel3.util.{RRArbiter, Queue}
++import chisel3.util._
+ 
+ import scala.collection.mutable.{ListBuffer}
+ 
+@@ -243,6 +243,9 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
+   lsu.io.hellacache <> hellaCacheArb.io.mem
+   outer.dcache.module.io.lsu <> lsu.io.dmem
+ 
++  // External performance monitor
++  outer.pmSourceNode.bundle <> core.io.pm
++
+   // Generate a descriptive string
+   val frontendStr = outer.frontend.module.toString
+   val coreStr = core.toString
+diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
+index 0f8d39e3..b084093a 100644
+--- a/src/main/scala/exu/core.scala
++++ b/src/main/scala/exu/core.scala
+@@ -1492,4 +1492,48 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+   } else {
+     io.ifu.debug_ftq_idx := DontCare
+   }
++
++  // Performance monitor
++  val level  = RegInit(0.U(4.W))
++  val pc     = RegInit(0.U(60.W))
++  val id     = RegInit(0.U(64.W))
++  val events = Wire(Vec(12, UInt(4.W)))
++  io.pm.tag    := Cat(level, pc, id)
++  io.pm.events := events.asUInt
++  // Extract performance monitor events
++  events    := DontCare
++  events(0) := 0.U
++  events(1) := 1.U
++  events(2) := PopCount(rob.io.commit.arch_valids.asUInt)
++  events(4) := PopCount(b2.mispredict.asUInt)
++  // Assemble tag
++  level := csr.io.status.prv
++  for (w <- 0 until coreWidth) {
++    def GetRowIdx(rob_idx: UInt): UInt = {
++      if (coreWidth == 1) return rob_idx
++      else return rob_idx >> log2Ceil(coreWidth).U
++    }
++    def GetBankIdx(rob_idx: UInt): UInt = {
++      if(coreWidth == 1) { return 0.U }
++      else           { return rob_idx(log2Ceil(coreWidth)-1, 0).asUInt }
++    }
++    def MatchBank(bank_idx: UInt): Bool = (bank_idx === w.U)
++    val rob_id = RegInit(VecInit(Seq.fill(numRobRows){0.U(32.W)}))
++    for (i <- 0 until rob.numWakeupPorts) {
++      val wb_resp = rob.io.wb_resps(i)
++      val wb_uop = wb_resp.bits.uop
++      val row_idx = GetRowIdx(wb_uop.rob_idx)
++      when (wb_resp.valid && MatchBank(GetBankIdx(wb_uop.rob_idx))) {
++        rob_id(row_idx) := wb_resp.bits.data.asUInt
++      }
++    }
++    when (
++      rob.io.commit.valids(w) &&
++      rob.io.commit.uops(w).uopc === uopSLLI &&
++      rob.io.commit.uops(w).pdst === 0.U
++    ) {
++      pc := rob.io.commit.uops(w).debug_pc(31,0)
++      id := rob_id(GetRowIdx(rob.io.commit.uops(w).rob_idx))
++    }
++  }
+ }

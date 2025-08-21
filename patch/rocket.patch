@@ -1,0 +1,75 @@
+diff --git a/src/main/scala/subsystem/RocketSubsystem.scala b/src/main/scala/subsystem/RocketSubsystem.scala
+index e9e1f5555..4418d0358 100644
+--- a/src/main/scala/subsystem/RocketSubsystem.scala
++++ b/src/main/scala/subsystem/RocketSubsystem.scala
+@@ -6,6 +6,7 @@ import org.chipsalliance.cde.config.Parameters
+ import freechips.rocketchip.diplomacy._
+ import freechips.rocketchip.prci.{ResetCrossingType, NoResetCrossing}
+ import freechips.rocketchip.tile._
++import freechips.rocketchip.util._
+ import freechips.rocketchip.devices.debug.{HasPeripheryDebug}
+ 
+ case class RocketCrossingParams(
+@@ -30,9 +31,11 @@ trait HasRocketTiles extends HasTiles { this: BaseSubsystem =>
+   }).toList
+ }
+ 
+-class RocketSubsystem(implicit p: Parameters) extends BaseSubsystem with HasRocketTiles with HasPeripheryDebug {
++class RocketSubsystem(implicit p: Parameters) extends BaseSubsystem
++  with HasRocketTiles with HasPeripheryDebug with HaveExtPerfMonitor
++{
+   override lazy val module = new RocketSubsystemModuleImp(this)
+ }
+ 
+ class RocketSubsystemModuleImp[+L <: RocketSubsystem](_outer: L) extends BaseSubsystemModuleImp(_outer)
+-    with HasTilesModuleImp
++    with HasTilesModuleImp with HaveExtPerfMonitorModuleImp
+diff --git a/src/main/scala/tile/BaseTile.scala b/src/main/scala/tile/BaseTile.scala
+index 448050a0d..460450fa3 100644
+--- a/src/main/scala/tile/BaseTile.scala
++++ b/src/main/scala/tile/BaseTile.scala
+@@ -219,6 +219,9 @@ abstract class BaseTile private (val crossing: ClockCrossingType, q: Parameters)
+   protected val tlSlaveXbar = LazyModule(new TLXbar)
+   protected val intXbar = LazyModule(new IntXbar)
+ 
++  val pmSourceNode = BundleBridgeSource(() => new PmSignals())
++  val pmNode: BundleBridgeOutwardNode[PmSignals] = pmSourceNode
++
+   /** Node for broadcasting a hart id to diplomatic consumers within the tile. */
+   val hartIdNexusNode: BundleBridgeNode[UInt] = BundleBroadcast[UInt](registered = p(InsertTimingClosureRegistersOnHartIds))
+ 
+diff --git a/src/main/scala/util/ExtPerfMonitor.scala b/src/main/scala/util/ExtPerfMonitor.scala
+new file mode 100644
+index 000000000..de49120f9
+--- /dev/null
++++ b/src/main/scala/util/ExtPerfMonitor.scala
+@@ -0,0 +1,28 @@
++package freechips.rocketchip.util
++
++import chisel3._
++import freechips.rocketchip.diplomacy.{BundleBridgeNexusNode, LazyModuleImpLike}
++import freechips.rocketchip.subsystem._
++
++class PmSignals extends Bundle {
++    val tag = Output(UInt(128.W))
++    val events = Output(UInt(48.W))
++}
++
++trait HaveExtPerfMonitor extends HasTiles {
++  this: BaseSubsystem =>
++  val module: HaveExtPerfMonitorModuleImp
++
++  val pmNexus = BundleBridgeNexusNode[PmSignals]()
++  val tilePmNodes = tiles.flatMap { case tile => Some(tile) }.map { _.pmNode }
++  tilePmNodes.foreach { pmNexus := _ }
++}
++
++
++trait HaveExtPerfMonitorModuleImp { this: LazyModuleImpLike =>
++  val outer: HaveExtPerfMonitor with HasTiles
++
++  val pmIO = outer.pmNexus.in.map(_._1)
++  val pm = IO(Output(Vec(pmIO.length, pmIO(0).cloneType)))
++  for (i <- 0 until pm.length) { pm(i) := pmIO(i) }
++}
+\ No newline at end of file

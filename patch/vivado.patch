@@ -1,0 +1,28 @@
+diff --git a/vhdl-wrapper/src/net/largest/riscv/vhdl/Main.java b/vhdl-wrapper/src/net/largest/riscv/vhdl/Main.java
+index 6236932..0325a8b 100644
+--- a/vhdl-wrapper/src/net/largest/riscv/vhdl/Main.java
++++ b/vhdl-wrapper/src/net/largest/riscv/vhdl/Main.java
+@@ -364,6 +364,12 @@ public class Main {
+             ln("    interrupts: in std_logic_vector(" + (interrupt_bits - 1) + " downto 0);");
+             ln("");
+         }
++        ln("");
++        ln("    pm_tag_0    : out std_logic_vector(127 downto 0);");
++        ln("    pm_events_0 : out std_logic_vector(47 downto 0);");
++        // ln("    pm_tag_1    : out std_logic_vector(31 downto 0);");
++        // ln("    pm_events_1 : out std_logic_vector(47 downto 0);");
++        ln("");
+         String s = null;
+         String bus = null;
+         for (BusSignal sig : axi_signals) {
+@@ -655,6 +661,10 @@ public class Main {
+             else if (nm.equals("debug_debug_dmactiveAck")) dst = "debug_dmactive";
+             else if (nm.startsWith("resetctrl_resetctrl_hartIsInReset")) dst = "'0'";
+             else if (nm.equals("interrupts")) dst = "interrupts_sync";
++            else if (nm.equals("pm_0_tag")) dst = "pm_tag_0";
++            else if (nm.equals("pm_0_events")) dst = "pm_events_0";
++            else if (nm.equals("pm_1_tag")) dst = "pm_tag_1";
++            else if (nm.equals("pm_1_events")) dst = "pm_events_1";
+             else dst = nm;
+             if (s != null) ln(s + ',');
+             while (nm.length() < id_len) nm += ' ';
