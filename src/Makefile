@@ -1,6 +1,8 @@
 .PHONY : clean
 
-TPM_SV        = tpm.sv
+TPM_SV = \
+	$(shell realpath firstk.sv) \
+	$(shell realpath tpm.sv)
 PARAM_CPUFREQ = 50000000
 
 define TPM_TCL
@@ -32,7 +34,7 @@ export TPM_TCL
 
 .tpm/ : $(TPM_SV)
 	$(RM) -r .tpm/ && mkdir .tpm
-	ln -s $(realpath $(TPM_SV)) .tpm/
+	ln -s $(TPM_SV) .tpm/
 	echo "$$TPM_TCL" > .tpm/tpm.tcl
 	vivado -mode batch -source .tpm/tpm.tcl >/dev/null 2>&1
 
