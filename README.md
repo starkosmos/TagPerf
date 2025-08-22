@@ -33,12 +33,13 @@ make -C src
 To build bitstream with performance monitor, we need to open
 the project generated, and in Vivado, open "IP Catalog", right
 click and add the IP directory `src/.tpm`. Open board design
-and add the IP "TPM". Add another IP "AXI to JTAG Master" to
+and add the IP "TPM". Add another IP "JTAG to AXI Master" to
 communicate with TPM by host machine via JTAG port. TPM uses
 AXILite protocol so that an "AXI Protocol Converter" IP is also
-required. Connect the clock port, reset port and AXI interfaces
-and then save block design. Then the modification is finished.
-Bitstream can be generated after this.
+required. Connect the clock port, reset port, tag port, event
+port and AXI interfaces, assign AXI address and then save block
+design. Then the modification is finished. Bitstream can be
+generated after this.
 
 After bitstream and Debian image are obtained, the PM can be
 tested on Genesys 2 with SD card written. TCL script
