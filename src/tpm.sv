@@ -76,6 +76,7 @@ module tpm #(
     logic  [15:0] waddr;       // AXI write address
     logic  [63:0] wdata;       // AXI write data
     /* counters */
+    logic             [63:0] gcnt;             // global counter
     logic     [evnum*64-1:0] ccnt[tagn-1:0];   // counter
     logic     [evnum*64-1:0] scnt[tagn-1:0];   // sampled counter
     logic  [tagn-1:0]        cvld, svld;       // valid bits
@@ -102,11 +103,13 @@ module tpm #(
     always_comb ovf = hpos[$clog2(tagn)] & cwdata[$clog2(evnum)'(sel)] >= comp;
     always_comb if (rep) caddr = fpos[$clog2(tagn)] ? $clog2(tagn)'(fpos) : victim;
         else             caddr = $clog2(tagn)'(hpos);
-    always_comb for (int i = 0; i < evnum; i++) cwdata[i] = (rep ? 0 : crdata[i]) + 64'(fevents[i]);
+    always_comb                                 cwdata[0] = gcnt;
+    always_comb for (int i = 1; i < evnum; i++) cwdata[i] = (rep ? 0 : crdata[i]) + 64'(fevents[i]);
     always_comb bufwe = spos[$clog2(tagn)];
     always_comb bufwa = buffr + $clog2(bufsz)'(bufnm);
     always_comb bufwd = {scnt[$clog2(tagn)'(spos)], stag[$clog2(tagn)'(spos)]};
     always_ff @(posedge clk) if (rst) victim <= 0; else victim <= victim + 1;
+    always_ff @(posedge clk) if (rst) gcnt <= 0; else if (|fevents) gcnt <= gcnt + 1;
     always_ff @(posedge clk) ccnt[caddr] <= cwdata;
     always_ff @(posedge clk) if (rst) svld <= 0; else begin
         if (bufwe)      svld[$clog2(tagn)'(spos)] <= 0;
