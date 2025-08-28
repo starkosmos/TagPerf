@@ -8,5 +8,5 @@ patch :
 	@echo "Applying patches to Rocket-Chip..."
 	@cd ../vivado-risc-v/rocket-chip/ && git apply ../../patch/rocket.patch
 	@echo "Applying patches to VHDL Wrapper..."
-	@cd ../vivado-risc-v/ && git apply ../patch/vivado.patch
+	@cd ../vivado-risc-v/ && git apply ../patch/vhdl.patch
 	@echo "Patches applied successfully."

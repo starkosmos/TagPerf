@@ -4,6 +4,22 @@ This repository includes a tag-based performance monitor and
 a demo with repository `vivado-risc-v`. The demo is based on
 a medium BOOM processor and board Genesys 2.
 
+## Repository Structure
+
+The sub-directories include:
+* `patch`: patches on repository `vivado-risc-v` and its
+    submodules, including:
+    * `boom.patch`, `rocket.patch` and `vhdl.patch`: patches on
+        hardware, which includes BOOM core, Rocket Chip and
+        VHDL wrapper accordingly to extract ports from internal
+        event signals.
+    * `linux.patch`: patches on Linux source code to export
+        process information.
+    * `perf.patch`: (optional) patches on device tree and SBI
+        callback functions to support Linux Perf tool.
+* `src`: source code of TagPerf, as a standalone module.
+* `vivado-risc-v`: submodule of demo based on.
+
 ## Usage
 
 To apply the performance monitor on BOOM processor, first
