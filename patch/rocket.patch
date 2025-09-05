@@ -1,3 +1,28 @@
+diff --git a/src/main/scala/rocket/TLB.scala b/src/main/scala/rocket/TLB.scala
+index c1f04aef7..42bcb4ed4 100644
+--- a/src/main/scala/rocket/TLB.scala
++++ b/src/main/scala/rocket/TLB.scala
+@@ -317,6 +317,11 @@ class TLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge: T
+     val ptw = new TLBPTWIO
+     /** suppress a TLB refill, one cycle after a miss */
+     val kill = Input(Bool())
++    /** jxy: performance monitor **/
++    val perf = Output(new Bundle {
++      val miss = Output(Bool())
++      val vadd = Output(UInt(vaddrBitsExtended.W))
++    })
+   })
+   io.ptw.customCSRs := DontCare
+ 
+@@ -746,4 +751,8 @@ class TLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge: T
+     val valids = set.map(_.valid.orR).asUInt
+     Mux(valids.andR, alt, PriorityEncoder(~valids))
+   }
++
++  /* jxy: performance monitor */
++  io.perf.miss := io.ptw.req.fire
++  io.perf.vadd := io.ptw.req.bits.bits.addr
+ }
 diff --git a/src/main/scala/subsystem/RocketSubsystem.scala b/src/main/scala/subsystem/RocketSubsystem.scala
 index e9e1f5555..4418d0358 100644
 --- a/src/main/scala/subsystem/RocketSubsystem.scala
@@ -40,19 +65,25 @@ index 448050a0d..460450fa3 100644
  
 diff --git a/src/main/scala/util/ExtPerfMonitor.scala b/src/main/scala/util/ExtPerfMonitor.scala
 new file mode 100644
-index 000000000..de49120f9
+index 000000000..921253229
 --- /dev/null
 +++ b/src/main/scala/util/ExtPerfMonitor.scala
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,34 @@
 +package freechips.rocketchip.util
 +
 +import chisel3._
 +import freechips.rocketchip.diplomacy.{BundleBridgeNexusNode, LazyModuleImpLike}
 +import freechips.rocketchip.subsystem._
 +
-+class PmSignals extends Bundle {
-+    val tag = Output(UInt(128.W))
-+    val events = Output(UInt(48.W))
++class PmSignals(
++    coreWidth: Int = 2,
++    tagWidth: Int = 16,
++    infoWidth: Int = 64,
++    eventWidth: Int = 4
++) extends Bundle {
++    val tag   = Output(Vec(coreWidth, UInt(tagWidth.W)))
++    val info  = Output(Vec(coreWidth, UInt(infoWidth.W)))
++    val event = Output(Vec(coreWidth, UInt(eventWidth.W)))
 +}
 +
 +trait HaveExtPerfMonitor extends HasTiles {

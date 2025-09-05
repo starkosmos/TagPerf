@@ -22,7 +22,7 @@ index 05821c52..dd1c9032 100644
    val frontendStr = outer.frontend.module.toString
    val coreStr = core.toString
 diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
-index 0f8d39e3..ac5d9d41 100644
+index 0f8d39e3..0c8559b7 100644
 --- a/src/main/scala/exu/core.scala
 +++ b/src/main/scala/exu/core.scala
 @@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
@@ -42,54 +42,282 @@ index 0f8d39e3..ac5d9d41 100644
    })
  
    io.ptw_tlb := DontCare
-@@ -1492,4 +1493,50 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+@@ -1492,4 +1493,102 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
    } else {
      io.ifu.debug_ftq_idx := DontCare
    }
 +
-+  // Performance monitor
-+  val level  = RegInit(0.U(4.W))
-+  val pc     = RegInit(0.U(60.W))
-+  val id     = RegInit(0.U(64.W))
-+  val events = Wire(Vec(12, UInt(4.W)))
-+  io.pm.tag    := Cat(level, pc, id)
-+  io.pm.events := events.asUInt
-+  // Extract performance monitor events
-+  events    := DontCare
-+  events(0) := 0.U
-+  events(1) := 1.U
-+  events(2) := PopCount(rob.io.commit.arch_valids.asUInt)
-+  events(4) := PopCount(b2.mispredict.asUInt)
-+  // Assemble tag
-+  level := csr.io.status.prv
++  // jxy: performance monitor
++  val level = Wire(UInt(2.W)) // global
++  val pid   = RegInit(0.U(12.W))
++  val pc    = Wire(Vec(coreWidth, UInt(vaddrBits.W))) // per instruction
++  val evt   = RegInit(VecInit(Seq.fill(coreWidth)(0.U(2.W))))
++  val evm   = Wire(Vec(coreWidth, Vec(4, Bool())))
++  for (w <- 0 until coreWidth) {
++    io.pm.tag(w)   := RegNext(Cat(pid, level, evt(w)))
++    io.pm.info(w)  := RegNext(pc(w))
++    io.pm.event(w) := RegNext(evm(w).asUInt)
++  }
++  // Additional info in ROB
 +  for (w <- 0 until coreWidth) {
 +    def GetRowIdx(rob_idx: UInt): UInt = {
 +      if (coreWidth == 1) return rob_idx
 +      else return rob_idx >> log2Ceil(coreWidth).U
 +    }
 +    def GetBankIdx(rob_idx: UInt): UInt = {
-+      if(coreWidth == 1) { return 0.U }
-+      else           { return rob_idx(log2Ceil(coreWidth)-1, 0).asUInt }
++      if (coreWidth == 1) return 0.U
++      else return rob_idx(log2Ceil(coreWidth)-1, 0).asUInt
 +    }
 +    def MatchBank(bank_idx: UInt): Bool = (bank_idx === w.U)
-+    val rob_id = RegInit(VecInit(Seq.fill(numRobRows){0.U(32.W)}))
++    val rob_pid = RegInit(VecInit(Seq.fill(numRobRows)(0.U(12.W))))
++    val rob_misp = RegInit(VecInit(Seq.fill(numRobRows)(false.B)))
++    val rob_dtm = RegInit(VecInit(Seq.fill(numRobRows)(false.B)))
++    val rob_dcm = RegInit(VecInit(Seq.fill(numRobRows)(false.B)))
++    // Record execution results for HINT argument
 +    for (i <- 0 until rob.numWakeupPorts) {
 +      val wb_resp = rob.io.wb_resps(i)
 +      val wb_uop = wb_resp.bits.uop
-+      val row_idx = GetRowIdx(wb_uop.rob_idx)
 +      when (wb_resp.valid && MatchBank(GetBankIdx(wb_uop.rob_idx))) {
-+        rob_id(row_idx) := wb_resp.bits.data.asUInt
++        rob_pid(GetRowIdx(wb_uop.rob_idx)) := wb_resp.bits.data.asUInt
 +      }
 +    }
++    // Clear when dispatching
++    when(dis_fire(w)) {
++      rob_misp(GetRowIdx(dis_uops(w).rob_idx)) := false.B
++      rob_dtm(GetRowIdx(dis_uops(w).rob_idx)) := false.B
++      rob_dcm(GetRowIdx(dis_uops(w).rob_idx)) := false.B
++    }
++    // Record mispredictions
++    when (b2.mispredict && MatchBank(GetBankIdx(b2.uop.rob_idx))) {
++      rob_misp(GetBankIdx(b2.uop.rob_idx)) := true.B
++    }
++    // Record DTLB and data cache misses
++    for (i <- 0 until memWidth) {
++      when (io.lsu.tperf(i).tlb_miss.valid && MatchBank(GetBankIdx(io.lsu.tperf(i).tlb_miss.bits))) {
++        rob_dtm(GetRowIdx(io.lsu.tperf(i).tlb_miss.bits)) := true.B
++      }
++      when (io.lsu.tperf(i).cache_miss.valid && MatchBank(GetBankIdx(io.lsu.tperf(i).cache_miss.bits))) {
++        rob_dcm(GetRowIdx(io.lsu.tperf(i).cache_miss.bits)) := true.B
++      }
++    }
++    // Record ITLB and instruction cache miss
++    val itm = Wire(Bool())
++    val icm = Wire(Bool())
++    itm := io.ifu.tperf.tlb_miss(rob.io.commit.uops(w).ftq_idx)
++    icm := io.ifu.tperf.cache_miss(rob.io.commit.uops(w).ftq_idx)
++    for (i <- 0 until w) {
++      when (rob.io.commit.uops(w).ftq_idx === rob.io.commit.uops(i).ftq_idx) {
++        itm := false.B
++        icm := false.B
++      }
++    }
++    // Get PC
++    io.ifu.debug_ftq_idx(w) := rob.io.commit.uops(w).ftq_idx
++    pc(w) := (AlignPCToBoundary(io.ifu.debug_fetch_pc(w), icBlockBytes)
++      + RegNext(rob.io.commit.uops(w).pc_lob)
++      - Mux(RegNext(rob.io.commit.uops(w).edge_inst), 2.U, 0.U))(vaddrBits-1,0)
++    // Get PID
 +    when (
 +      rob.io.commit.valids(w) &&
 +      rob.io.commit.uops(w).uopc === uopSLLI &&
 +      rob.io.commit.uops(w).pdst === 0.U
 +    ) {
-+      id := rob_id(GetRowIdx(rob.io.commit.uops(w).rob_idx))
++      pid := rob_pid(GetRowIdx(rob.io.commit.uops(w).rob_idx))
 +    }
-+    when (rob.io.commit.valids(w)) {
-+      pc := rob.io.commit.uops(w).debug_pc(31,0)
++    // Get event tag
++    when (!rob.io.commit.valids(w)) {
++      evt(w) := 0.U // EVT::NULL
++    }.elsewhen (rob.io.commit.uops(w).uopc === uopLD || rob.io.commit.uops(w).uopc === uopSTA) {
++      evt(w) := 1.U // EVT::MEM
++    }.elsewhen (rob.io.commit.uops(w).is_br || rob.io.commit.uops(w).is_jal || rob.io.commit.uops(w).is_jalr) {
++      evt(w) := 2.U // EVT::BRANCH
++    }.otherwise {
++      evt(w) := 3.U // EVT::OTHERS
++    }
++    // Get event mask
++    evm(w)(0) := 1.B
++    evm(w)(1) := RegNext(itm) || evt(w) === 1.U && RegNext(rob_dtm(GetRowIdx(rob.io.commit.uops(w).rob_idx)))
++    evm(w)(2) := RegNext(icm)
++    evm(w)(3) :=
++      evt(w) === 1.U && RegNext(rob_dcm(GetRowIdx(rob.io.commit.uops(w).rob_idx))) ||
++      evt(w) === 2.U && RegNext(rob_misp(GetRowIdx(rob.io.commit.uops(w).rob_idx)))
++  }
++  // Get privilege level
++  level := csr.io.status.prv
+ }
+diff --git a/src/main/scala/ifu/frontend.scala b/src/main/scala/ifu/frontend.scala
+index 17bf3b2e..cebaaf2b 100644
+--- a/src/main/scala/ifu/frontend.scala
++++ b/src/main/scala/ifu/frontend.scala
+@@ -286,6 +286,11 @@ class BoomFrontendIO(implicit p: Parameters) extends BoomBundle
+   val flush_icache = Output(Bool())
+ 
+   val perf = Input(new FrontendPerfEvents)
++
++  val tperf = Input(new Bundle {
++    val tlb_miss = Vec(ftqSz, Bool())
++    val cache_miss = Vec(ftqSz, Bool())
++  })
+ }
+ 
+ /**
+@@ -985,6 +990,46 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
+   ftq.io.debug_ftq_idx := io.cpu.debug_ftq_idx
+   io.cpu.debug_fetch_pc := ftq.io.debug_fetch_pc
+ 
++  // jxy: performance monitor
++  val tlbVadd = RegInit(0.U(vaddrBitsExtended.W))
++  val cachePadd = RegInit(0.U(paddrBits.W))
++  val f3_tlbMiss = withReset(reset.asBool || f3_clear) { Module(new Queue(Bool(), 1, pipe=true, flow=false)) }
++  val f3_cacheMiss = withReset(reset.asBool || f3_clear) { Module(new Queue(Bool(), 1, pipe=true, flow=false)) }
++  val f4_tlbMiss = withReset(reset.asBool || f4_clear) { Module(new Queue(Bool(), 1, pipe=true, flow=false)) }
++  val f4_cacheMiss = withReset(reset.asBool || f4_clear) { Module(new Queue(Bool(), 1, pipe=true, flow=false)) }
++  val ftq_enq_ptr = RegInit(1.U(log2Ceil(ftqSz).W))
++  val ftq_tlbMiss = Reg(Vec(ftqSz, Bool()))
++  val ftq_cacheMiss = Reg(Vec(ftqSz, Bool()))
++  f3_tlbMiss  .io.enq.valid := f3.io.enq.valid
++  f3_cacheMiss.io.enq.valid := f3.io.enq.valid
++  f3_tlbMiss  .io.enq.bits  := (s2_vpc >> pgIdxBits)    ===  tlbVadd
++  f3_cacheMiss.io.enq.bits  := (s2_ppc >> blockOffBits) === (cachePadd >> blockOffBits)
++  f3_tlbMiss  .io.deq.ready := f3.io.deq.ready
++  f3_cacheMiss.io.deq.ready := f3.io.deq.ready
++  f4_tlbMiss  .io.enq.valid := f4.io.enq.valid
++  f4_cacheMiss.io.enq.valid := f4.io.enq.valid
++  f4_tlbMiss  .io.enq.bits  := f3_tlbMiss  .io.deq.bits
++  f4_cacheMiss.io.enq.bits  := f3_cacheMiss.io.deq.bits
++  f4_tlbMiss  .io.deq.ready := f4.io.deq.ready
++  f4_cacheMiss.io.deq.ready := f4.io.deq.ready
++  when (f3_tlbMiss  .io.enq.valid && f3_tlbMiss  .io.enq.bits) { tlbVadd   := 0.U }
++  when (f3_cacheMiss.io.enq.valid && f3_cacheMiss.io.enq.bits) { cachePadd := 0.U }
++  when (tlb   .io.perf.miss)    { tlbVadd   := tlb   .io.perf.vadd }
++  when (icache.io.perf.acquire) { cachePadd := icache.io.perf.padd }
++  when (ftq.io.deq.valid) {
++    ftq_tlbMiss  (ftq.io.deq.bits) := false.B
++    ftq_cacheMiss(ftq.io.deq.bits) := false.B
++  }
++  when (ftq.io.enq.fire) {
++    ftq_tlbMiss  (ftq_enq_ptr) := f4_tlbMiss  .io.deq.bits
++    ftq_cacheMiss(ftq_enq_ptr) := f4_cacheMiss.io.deq.bits
++    ftq_enq_ptr := WrapInc(ftq_enq_ptr, ftqSz)
++  }
++  when (ftq.io.redirect.valid) {
++    ftq_enq_ptr := WrapInc(ftq.io.redirect.bits, ftqSz)
++  }
++  io.cpu.tperf.tlb_miss   := ftq_tlbMiss
++  io.cpu.tperf.cache_miss := ftq_cacheMiss
+ 
+   override def toString: String =
+     (BoomCoreStringPrefix("====Overall Frontend Params====") + "\n"
+diff --git a/src/main/scala/ifu/icache.scala b/src/main/scala/ifu/icache.scala
+index 916a688f..e7181fc1 100644
+--- a/src/main/scala/ifu/icache.scala
++++ b/src/main/scala/ifu/icache.scala
+@@ -82,6 +82,7 @@ class ICacheBundle(val outer: ICache) extends BoomBundle()(outer.p)
+ 
+   val perf = Output(new Bundle {
+     val acquire = Bool()
++    val padd = UInt(paddrBits.W)
+   })
+ }
+ 
+@@ -334,6 +335,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
+   tl_out.e.valid := false.B
+ 
+   io.perf.acquire := tl_out.a.fire
++  io.perf.padd := refill_paddr
+ 
+   when (!refill_valid) { invalidated := false.B }
+   when (refill_fire) { refill_valid := true.B }
+diff --git a/src/main/scala/lsu/dcache.scala b/src/main/scala/lsu/dcache.scala
+index 9f326f50..64fae1b0 100644
+--- a/src/main/scala/lsu/dcache.scala
++++ b/src/main/scala/lsu/dcache.scala
+@@ -820,6 +820,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
+ 
+   io.lsu.perf.release := edge.done(tl_out.c)
+   io.lsu.perf.acquire := edge.done(tl_out.a)
++  io.lsu.perf.padd := tl_out.a.bits.address
+ 
+   // load data gen
+   val s2_data_word_prebypass = widthMap(w => s2_data_muxed(w) >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits).W)))
+diff --git a/src/main/scala/lsu/lsu.scala b/src/main/scala/lsu/lsu.scala
+index 1eb8ba24..ef57c55d 100644
+--- a/src/main/scala/lsu/lsu.scala
++++ b/src/main/scala/lsu/lsu.scala
+@@ -102,6 +102,7 @@ class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
+   val perf = Input(new Bundle {
+     val acquire = Bool()
+     val release = Bool()
++    val padd = UInt(paddrBits.W)
+   })
+ 
+ }
+@@ -153,6 +154,11 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
+     val release = Bool()
+     val tlbMiss = Bool()
+   })
++
++  val tperf = Output(Vec(memWidth, new Bundle {
++    val tlb_miss = Valid(UInt(robAddrSz.W))
++    val cache_miss = Valid(UInt(robAddrSz.W))
++  }))
+ }
+ 
+ class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
+@@ -1651,6 +1657,32 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
+                     ~(st_exc_killed_mask.asUInt)
+ 
+ 
++  // jxy: performance monitor
++  val tlbVadd = RegInit((0.U(vaddrBitsExtended.W)))
++  val cachePadd = RegInit(0.U(coreMaxAddrBits.W))
++  for (w <- 0 until memWidth) {
++    io.core.tperf(w).tlb_miss.valid := false.B
++    io.core.tperf(w).cache_miss.valid := false.B
++    io.core.tperf(w).tlb_miss.bits := DontCare
++    io.core.tperf(w).cache_miss.bits := DontCare
++    when (exe_tlb_valid(w) && (exe_tlb_vaddr(w) >> pgIdxBits) === tlbVadd) {
++      io.core.tperf(w).tlb_miss.valid := true.B
++      io.core.tperf(w).tlb_miss.bits := exe_tlb_uop(w).rob_idx
++      tlbVadd := 0.U
++    }
++    val resp_addr = Mux(
++      io.dmem.resp(w).bits.uop.uses_ldq,
++      ldq(io.dmem.resp(w).bits.uop.ldq_idx).bits.addr.bits,
++      stq(io.dmem.resp(w).bits.uop.stq_idx).bits.addr.bits
++    )
++    when (io.dmem.resp(w).valid && (resp_addr >> blockOffBits) === (cachePadd >> blockOffBits)) {
++      io.core.tperf(w).cache_miss.valid := true.B
++      io.core.tperf(w).cache_miss.bits := io.dmem.resp(w).bits.uop.rob_idx
++      cachePadd := 0.U
 +    }
 +  }
++  when (dtlb.io.perf.miss)    { tlbVadd   := dtlb.io.perf.vadd }
++  when (io.dmem.perf.acquire) { cachePadd := io.dmem.perf.padd }
+ }
+ 
+ /**
+diff --git a/src/main/scala/lsu/tlb.scala b/src/main/scala/lsu/tlb.scala
+index a09018b4..311b0412 100644
+--- a/src/main/scala/lsu/tlb.scala
++++ b/src/main/scala/lsu/tlb.scala
+@@ -23,6 +23,11 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
+     val sfence = Input(Valid(new SFenceReq))
+     val ptw = new TLBPTWIO
+     val kill = Input(Bool())
++    // jxy: performance monitor
++    val perf = Output(new Bundle {
++      val miss = Output(Bool())
++      val vadd = Output(UInt(vaddrBitsExtended.W))
++    })
+   })
+   io.ptw := DontCare
+   io.resp := DontCare
+@@ -358,4 +363,7 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
+   }
+ 
+ 
++  // jxy: performance monitor
++  io.perf.miss := io.ptw.req.fire
++  io.perf.vadd := io.ptw.req.bits.bits.addr
  }
