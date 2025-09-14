@@ -5,14 +5,18 @@
  */
 
 module tpm #(
-    parameter evnum = 64,  // event number
-    parameter tagn  = 8,   // tag number
+    parameter twd = 16,    // tag width
+    parameter iwd = 64,    // info width
+    parameter ewd = 4,     // event width
+    parameter tagn  = 32,  // tag number
+    parameter filtn = 4,   // filter number
     parameter bufsz = 1024 // buffer size
 )(
-    input  logic                  clk,
-    input  logic                  rst,
-    input  logic          [127:0] tag,    // tag for performance monitoring
-    input  logic [evnum-1:0][3:0] events, // numbers of each event
+    input  logic           clk,
+    input  logic           rst,
+    input  logic [twd-1:0] tag,  // tag for performance monitoring
+    input  logic [iwd-1:0] info, // additional sampling info
+    input  logic [ewd-1:0] evm,  // event mask
     /* AXI slave interface */
     input  logic [15:0] s_axi_awaddr,
     input  logic        s_axi_awvalid,
@@ -31,35 +35,40 @@ module tpm #(
     output logic        s_axi_rvalid,
     input  logic        s_axi_rready
 );
-    /*----------------------- address map -----------------------*\
-    | 0:           (r) sample counter 0 (w) tag 0                 |
-    | 8:           (r) sample counter 1 (w) tag 1                 |
-    |    ...                                                      |
-    | 8*(evnum-1): (r) sample counter evnum - 1 (w) tag evnum - 1 |
-    | 8*(evnum  ): (r) sample tag lower 64-bit                    |
-    | 8*(evnum+1): (r) sample tag higher 64-bit                   |
-    | 8*(evnum+2): (rw) control register                          |
-    | 8*(evnum+3): (rw) comparator register                       |
-    | 8*(evnum+4): (rw) tag filter floor lower 64-bit             |
-    | 8*(evnum+5): (rw) tag filter floor higher 64-bit            |
-    | 8*(evnum+6): (rw) tag filter ceiling lower 64-bit           |
-    | 8*(evnum+7): (rw) tag filter ceiling higher 64-bit          |
-    | 8*(evnum+8): (rw) tag mask lower 64-bit                     |
-    | 8*(evnum+9): (rw) tag mask higher 64-bit                    |
-    |                                                             |
-    | control register:                                           |
-    |     [31:8] (rw) sample selection                            |
-    |     [1]    (r) buffer full                                  |
-    |     [0]    (r) valid (w) retrieve                           |
-    \*-----------------------------------------------------------*/
+    /*------------ address map -------------*\
+    | 0x0000: (rw) control register          |
+    | 0x0008: (rw) comparator register       |
+    | 0x0010: (rw) tag filter value 0        |
+    | 0x0018: (rw) tag filter mask 0         |
+    | 0x0020: (rw) tag filter value 1        |
+    | 0x0028: (rw) tag filter mask 1         |
+    |    ...                                 |
+    | 0x1000: (r)  sample counter 0          |
+    | 0x1008: (r)  sample counter 1          |
+    |    ...                                 |
+    | 0x2000: (r)  sample tag                |
+    | 0x2008: (r)  sample info               |
+    | 0x2010: (r)  remaining tag             |
+    |    ...                                 |
+    | 0x3000: (r)  remaining counter 0       |
+    | 0x3008: (r)  remaining counter 1       |
+    |    ...                                 |
+    |                                        |
+    | control register:                      |
+    |     [63:32] (rw) sample selection mask |
+    |     [31:16] (rw) remaining selection   |
+    |     [1]     (r)  buffer full           |
+    |     [0]     (r)  valid (w) retrieve    |
+    \*--------------------------------------*/
 
     /* sample buffer */
-    logic    [evnum*64+127:0] buff[bufsz-1:0]; // buffer for storing samples
+    localparam bwd = ewd * 64 + iwd + twd;     // counters, info and tag
+    logic           [bwd-1:0] buff[bufsz-1:0]; // buffer for storing samples
     logic [$clog2(bufsz)-1:0] buffr;           // buffer front index
     logic   [$clog2(bufsz):0] bufnm;           // buffer number
     logic                     bufre, bufwe;    // buffer enable signals
     logic [$clog2(bufsz)-1:0] bufra, bufwa;    // buffer addresses
-    logic    [evnum*64+127:0] bufrd, bufwd;    // buffer read data
+    logic           [bwd-1:0] bufrd, bufwd;    // buffer read data
     always_ff @(posedge clk) if (bufre) buffr <= buffr + 1;
     always_ff @(posedge clk)
         if (32'(bufnm) + (bufwe ? 1 : 0) - (bufre ? 1 : 0) > bufsz) // avoid overflow
@@ -68,72 +77,68 @@ module tpm #(
     always_ff @(posedge clk) if (bufre) bufrd <= buff[bufra];
     always_ff @(posedge clk) if (bufwe) buff[bufwa] <= bufwd;
 
-    /* register control */
-    logic  [23:0] sel;         // sample selection register
-    logic  [63:0] comp;        // comparator register
-    logic [127:0] floor, ceil; // tag filter registers
-    logic [127:0] mask;        // tag mask register
-    logic  [15:0] waddr;       // AXI write address
-    logic  [63:0] wdata;       // AXI write data
-    /* counters */
-    logic             [63:0] gcnt;             // global counter
-    logic     [evnum*64-1:0] ccnt[tagn-1:0];   // counter
-    logic     [evnum*64-1:0] scnt[tagn-1:0];   // sampled counter
-    logic  [tagn-1:0]        cvld, svld;       // valid bits
-    logic  [tagn-1:0][127:0] ctag, stag;       // tags
-    logic  [evnum-1:0][63:0] crdata, cwdata;   // counter read and write values
-    logic [$clog2(tagn)-1:0] caddr, victim;    // counter read/write address and victim way
-    logic         [tagn-1:0] hit;              // tag hit bitmap
-    logic                    rep, ovf;         // replacement and overflow
-    logic   [$clog2(tagn):0] hpos, fpos, spos; // hit, free and sample valid position
-    logic   [evnum-1:0][3:0] fevents;          // filtered events
-    firstk #(.width(tagn), .k(1)) hit_inst(.bits(hit), .pos(hpos));
-    firstk #(.width(tagn), .k(1)) free_inst(.bits(~cvld), .pos(fpos));
-    firstk #(.width(tagn), .k(1)) svpos_inst(.bits(svld), .pos(spos));
-    always_comb
-        if (tag[127:96] < floor[127:96] | tag[127:96] > ceil[127:96] | // filter by 32-bit
-            tag[ 95:64] < floor[ 95:64] | tag[ 95:64] > ceil[ 95:64] |
-            tag[ 63:32] < floor[ 63:32] | tag[ 63:32] > ceil[ 63:32] |
-            tag[ 31: 0] < floor[ 31: 0] | tag[ 31: 0] > ceil[ 31: 0]
-        ) fevents = 0;
-        else fevents = events;
-    always_comb for (int i = 0; i < tagn; i++) hit[i] = cvld[i] & (ctag[i] & mask) == (tag & mask);
-    always_comb crdata = ccnt[caddr] ;
-    always_comb rep = ~hpos[$clog2(tagn)] & |fevents;
-    always_comb ovf = hpos[$clog2(tagn)] & cwdata[$clog2(evnum)'(sel)] >= comp;
-    always_comb if (rep) caddr = fpos[$clog2(tagn)] ? $clog2(tagn)'(fpos) : victim;
-        else             caddr = $clog2(tagn)'(hpos);
-    always_comb                                 cwdata[0] = gcnt;
-    always_comb for (int i = 1; i < evnum; i++) cwdata[i] = (rep ? 0 : crdata[i]) + 64'(fevents[i]);
-    always_comb bufwe = spos[$clog2(tagn)];
-    always_comb bufwa = buffr + $clog2(bufsz)'(bufnm);
-    always_comb bufwd = {scnt[$clog2(tagn)'(spos)], stag[$clog2(tagn)'(spos)]};
-    always_ff @(posedge clk) if (rst) victim <= 0; else victim <= victim + 1;
-    always_ff @(posedge clk) if (rst) gcnt <= 0; else if (|fevents) gcnt <= gcnt + 1;
-    always_ff @(posedge clk) ccnt[caddr] <= cwdata;
-    always_ff @(posedge clk) if (rst) svld <= 0; else begin
-        if (bufwe)      svld[$clog2(tagn)'(spos)] <= 0;
-        if (rep | ovf) {svld[caddr], stag[caddr]} <= {cvld[caddr], ctag[caddr]};
+    /* registers and events */
+    logic               [31:0] ssel;         // sample selection
+    logic               [15:0] rsel;         // remaining selection
+    logic               [63:0] cmp;          // comparator
+    logic [filtn-1:0][twd-1:0] filtm, filtv; // tag filter registers
+    logic [ewd-1:0]            fevents;      // filtered events
+    always_comb begin
+        fevents = 0;
+        for (int i = 0; i < filtn; i++)
+            if ((filtm[i] & tag) == (filtm[i] & filtv[i]))
+                fevents = evm;
     end
-    always_ff @(posedge clk) if (rep | ovf) scnt[caddr] <= rep ? crdata : cwdata;
-    always_ff @(posedge clk) if (rst) cvld <= 0;
-        else if (rep) cvld[caddr] <= 1;
-        else if (ovf) cvld[caddr] <= 0;
+
+    /* tags and counters */
+    logic [tagn-1:0][twd-1:0] ctag;           // tags
+    logic        [ewd*64-1:0] ccnt[tagn-1:0]; // event counters
+    logic     [ewd-1:0][63:0] crdata, cwdata; // read and write data
+    logic     [ewd-1:0][63:0] bwdata;         // buffer write data of counters
+    logic     [ewd-1:0][63:0] rmdata;         // remaining data
+    logic  [$clog2(tagn)-1:0] caddr, victim;  // read/write address and victim way
+    logic [tagn-1:0]          hit;            // hit bitmap
+    logic                     rep;            // replacement
+    logic           [ewd-1:0] ovf;            // overflow
+    logic    [$clog2(tagn):0] hpos;           // hit and free position
+    firstk #(.width(tagn), .k(1)) hit_inst(.bits(hit), .pos(hpos));
+    always_comb for (int i = 0; i < tagn; i++) hit[i] = ctag[i] == tag;
+    always_comb crdata = ccnt[caddr];
+    always_comb rmdata = ccnt[32'(rsel)]; // todo: multiplexing to save read ports
+    always_comb for (int i = 0; i < ewd; i++) bwdata[i] = crdata[i] + 64'(fevents[i]);
+    always_comb for (int i = 0; i < ewd; i++)
+        if      (rep)    cwdata[i] = 64'(fevents[i]);
+        else if (ovf[i]) cwdata[i] = 0;
+        else             cwdata[i] = bwdata[i];
+    always_comb rep = ~hpos[$clog2(tagn)] & |fevents;
+    always_comb if (hpos[$clog2(tagn)]) begin
+        for (int i = 0; i < ewd; i++)
+            ovf[i] = ssel[i] & bwdata[i] >= cmp;
+    end else ovf = 0;
+    always_comb caddr = rep ? victim : $clog2(tagn)'(hpos);
+    always_comb bufwe = |ovf | rep;
+    always_comb bufwa = buffr + $clog2(bufsz)'(bufnm);
+    always_comb bufwd = {bwdata, info, tag};
+    always_ff @(posedge clk) if (rst) victim <= 0; else if (rep) victim <= victim + 1;
     always_ff @(posedge clk) if (|fevents) ctag[caddr] <= tag;
+    always_ff @(posedge clk) ccnt[caddr] <= cwdata;
 
     /* AXI transaction */
-    logic [evnum-1:0][63:0] bcnt;
-    logic                   bvld;
-    logic           [127:0] btag;
-    always_comb {bcnt, btag} = bufrd;
+    logic          [15:0] waddr;
+    logic          [63:0] wdata;
+    logic                 bvld;
+    logic [ewd-1:0][63:0] bcnt;
+    logic [iwd-1:0]       binfo;
+    logic [twd-1:0]       btag;
+    always_comb {bcnt, binfo, btag} = bufrd;
     always_comb bufre = |bufnm & ~bvld;
     always_comb bufra = buffr;
     always_ff @(posedge clk) if (rst) begin
-        sel           <= 0;
-        comp          <= -64'd1;
-        floor         <= 0;
-        ceil          <= -128'd1;
-        mask          <= 0;
+        ssel          <= 0;
+        rsel          <= 0;
+        cmp           <= ~64'd0;
+        filtv         <= 0;
+        filtm         <= ~(filtn*twd)'(0);
         bvld          <= 0;
         s_axi_arready <= 1;
         s_axi_awready <= 1;
@@ -147,34 +152,39 @@ module tpm #(
         if (s_axi_arvalid & s_axi_arready) begin // AR handshake
             s_axi_arready <= 0;
             s_axi_rvalid  <= 1;
-            if      (s_axi_araddr[15:3] <  evnum)     s_axi_rdata <= bcnt[32'(s_axi_araddr) >> 3];
-            else if (s_axi_araddr[15:3] == evnum)     s_axi_rdata <= btag[63:0];
-            else if (s_axi_araddr[15:3] == evnum + 1) s_axi_rdata <= btag[127:64];
-            else if (s_axi_araddr[15:3] == evnum + 2) begin
-                s_axi_rdata       <= 0;
-                s_axi_rdata[31:8] <= sel;
-                s_axi_rdata[1]    <= bufnm > bufsz / 2 ? 1'b1 : 1'b0; // report full when half full
-                s_axi_rdata[0]    <= bvld;
-            end else if (s_axi_araddr[15:3] == evnum + 3) s_axi_rdata <= comp;
-            else if (s_axi_araddr[15:3] == evnum + 4) s_axi_rdata <= floor[63:0];
-            else if (s_axi_araddr[15:3] == evnum + 5) s_axi_rdata <= floor[127:64];
-            else if (s_axi_araddr[15:3] == evnum + 6) s_axi_rdata <= ceil[63:0];
-            else if (s_axi_araddr[15:3] == evnum + 7) s_axi_rdata <= ceil[127:64];
-            else if (s_axi_araddr[15:3] == evnum + 8) s_axi_rdata <= mask[63:0];
-            else if (s_axi_araddr[15:3] == evnum + 9) s_axi_rdata <= mask[127:64];
+            case (s_axi_araddr[15:12])
+                0: // control registers
+                    if (s_axi_araddr[11:0] == 12'h000) begin
+                        s_axi_rdata        <= 0;
+                        s_axi_rdata[63:32] <= ssel;
+                        s_axi_rdata[31:16] <= rsel;
+                        s_axi_rdata[1]     <= bufnm > bufsz / 2 ? 1'b1 : 1'b0; // report full when half full
+                        s_axi_rdata[0]     <= bvld;
+                    end else if (s_axi_araddr[11:0] == 12'h008) s_axi_rdata <= cmp;
+                    else if (s_axi_araddr[3:0] == 4'h0) s_axi_rdata <= 64'(filtv[32'(s_axi_araddr[11:4]) - 1]);
+                    else if (s_axi_araddr[3:0] == 4'h8) s_axi_rdata <= 64'(filtm[32'(s_axi_araddr[11:4]) - 1]);
+                1: // sample counters
+                    s_axi_rdata <= bcnt[32'(s_axi_araddr[11:3])];
+                2: // sample info and tag
+                    if      (s_axi_araddr[11:0] == 12'h000) s_axi_rdata <= 64'(btag);
+                    else if (s_axi_araddr[11:0] == 12'h008) s_axi_rdata <= binfo;
+                    else if (s_axi_araddr[11:0] == 12'h010) s_axi_rdata <= 64'(ctag[32'(rsel)]);
+                3: // remaining counters
+                    s_axi_rdata <= rmdata[32'(s_axi_araddr[11:3])];
+            endcase
         end
         if (~s_axi_awready & ~s_axi_wready & ~s_axi_bvalid) begin // AW and W handshake done
             s_axi_bvalid <= 1;
-            if (waddr[15:3] == evnum + 2) begin
-                sel <= wdata[31:8];
-                if (~wdata[0]) bvld <= 0; // retrieve and clear valid bit
-            end else if (waddr[15:3] == evnum + 3) comp <= wdata;
-            else if (waddr[15:3] == evnum + 4) floor[63:0] <= wdata;
-            else if (waddr[15:3] == evnum + 5) floor[127:64] <= wdata;
-            else if (waddr[15:3] == evnum + 6) ceil[63:0] <= wdata;
-            else if (waddr[15:3] == evnum + 7) ceil[127:64] <= wdata;
-            else if (waddr[15:3] == evnum + 8) mask[63:0] <= wdata;
-            else if (waddr[15:3] == evnum + 9) mask[127:64] <= wdata;
+            case (waddr[15:12])
+                0: // control registers
+                    if (waddr[11:0] == 12'h000) begin
+                        ssel <= wdata[63:32];
+                        rsel <= wdata[31:16];
+                        if (~wdata[0]) bvld <= 0; // retrieve and clear valid
+                    end else if (waddr[11:0] == 12'h008) cmp <= wdata;
+                    else if (waddr[3:0] == 4'h0) filtv[32'(waddr[11:4]) - 1] <= wdata[twd-1:0];
+                    else if (waddr[3:0] == 4'h8) filtm[32'(waddr[11:4]) - 1] <= wdata[twd-1:0];
+            endcase
         end
         if (s_axi_rvalid  & s_axi_rready)  {s_axi_rvalid, s_axi_arready}               <= 1; // R  handshake
         if (s_axi_bvalid  & s_axi_bready)  {s_axi_bvalid, s_axi_awready, s_axi_wready} <= 3; // B  handshake

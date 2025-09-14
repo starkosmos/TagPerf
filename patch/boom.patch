@@ -22,7 +22,7 @@ index 05821c52..dd1c9032 100644
    val frontendStr = outer.frontend.module.toString
    val coreStr = core.toString
 diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
-index 0f8d39e3..c6ab56f8 100644
+index 0f8d39e3..45fcd152 100644
 --- a/src/main/scala/exu/core.scala
 +++ b/src/main/scala/exu/core.scala
 @@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
@@ -227,7 +227,7 @@ index 0f8d39e3..c6ab56f8 100644
 +      rob.io.commit.uops(w).uopc === uopSLLI &&
 +      rob.io.commit.uops(w).pdst === 0.U
 +    ) {
-+      pid := RegNext(rob_pid(GetRowIdx(rob.io.commit.uops(w).rob_idx)))
++      pid := rob_pid(GetRowIdx(rob.io.commit.uops(w).rob_idx))
 +    }
 +    // Get event tag
 +    when (rob.io.commit.uops(w).uopc === uopLD || rob.io.commit.uops(w).uopc === uopSTA) {
