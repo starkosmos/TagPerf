@@ -1,5 +1,5 @@
 # Tcl script to utilize performance monitor
-set ewd 12
+set ewd 4
 set fwd 4
 proc axiwrite { address value } {
     create_hw_axi_txn -force txn [get_hw_axis hw_axi_1] -address $address -data $value -len 1 -type write
