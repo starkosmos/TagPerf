@@ -105,7 +105,7 @@ module tpm #(
     always_comb for (int i = 0; i < tagn; i++) hit[i] = ctag[i] == tag;
     always_comb crdata = ccnt[caddr];
     always_comb rmdata = ccnt[32'(rsel)]; // todo: multiplexing to save read ports
-    always_comb for (int i = 0; i < ewd; i++) bwdata[i] = crdata[i] + 64'(fevents[i]);
+    always_comb for (int i = 0; i < ewd; i++) bwdata[i] = crdata[i] + (rep ? 0 : 64'(fevents[i]));
     always_comb for (int i = 0; i < ewd; i++)
         if      (rep)    cwdata[i] = 64'(fevents[i]);
         else if (ovf[i]) cwdata[i] = 0;
@@ -118,7 +118,7 @@ module tpm #(
     always_comb caddr = rep ? victim : $clog2(tagn)'(hpos);
     always_comb bufwe = |ovf | rep;
     always_comb bufwa = buffr + $clog2(bufsz)'(bufnm);
-    always_comb bufwd = {bwdata, info, tag};
+    always_comb bufwd = {bwdata, info, ctag[caddr]};
     always_ff @(posedge clk) if (rst) victim <= 0; else if (rep) victim <= victim + 1;
     always_ff @(posedge clk) if (|fevents) ctag[caddr] <= tag;
     always_ff @(posedge clk) ccnt[caddr] <= cwdata;

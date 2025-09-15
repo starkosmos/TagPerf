@@ -22,7 +22,7 @@ index 05821c52..dd1c9032 100644
    val frontendStr = outer.frontend.module.toString
    val coreStr = core.toString
 diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
-index 0f8d39e3..16b875a8 100644
+index 0f8d39e3..17b3eafc 100644
 --- a/src/main/scala/exu/core.scala
 +++ b/src/main/scala/exu/core.scala
 @@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
@@ -142,7 +142,7 @@ index 0f8d39e3..16b875a8 100644
 +    // Record branches and PCs
 +    for (b <- brinfos) {
 +      when (b.valid && MatchBank(GetBankIdx(b.uop.rob_idx))) {
-+        rob_cnt(GetRowIdx(b.uop.rob_idx)) := pipLatency
++        rob_cnt(GetRowIdx(b.uop.rob_idx)) := Mux(b.mispredict, pipLatency, 0.U)
 +        rob_misp(GetRowIdx(b.uop.rob_idx)) := b.mispredict
 +        rob_taken(GetRowIdx(b.uop.rob_idx)) := b.taken
 +        rob_npc(GetRowIdx(b.uop.rob_idx)) := b.jalr_target
@@ -177,7 +177,7 @@ index 0f8d39e3..16b875a8 100644
 +    }
 +    val uop = RegNext(rob.io.commit.uops(w))
 +    when (RegNext(rob.io.commit.valids(w))) {
-+      last_evm := com_evm
++      last_evm := RegNext(com_evm)
 +      last_pc := com_pc
 +      last_cnt := com_cnt
 +      when (uop.is_br && rob_taken(GetRowIdx(uop.rob_idx))) {
@@ -205,11 +205,11 @@ index 0f8d39e3..16b875a8 100644
 +    com_cnt := rob_cnt(GetRowIdx(uop.rob_idx))
 +    stage(w) := 0.U
 +    com_evm(0) := 1.B
-+    com_evm(1) := RegNext(itm) || RegNext(rob_dtm(GetRowIdx(rob.io.commit.uops(w).rob_idx)))
-+    com_evm(2) := RegNext(icm)
++    com_evm(1) := itm || rob_dtm(GetRowIdx(rob.io.commit.uops(w).rob_idx))
++    com_evm(2) := icm
 +    com_evm(3) :=
-+      RegNext(rob_dcm(GetRowIdx(rob.io.commit.uops(w).rob_idx))) ||
-+      RegNext(rob_misp(GetRowIdx(rob.io.commit.uops(w).rob_idx)))
++      rob_dcm(GetRowIdx(rob.io.commit.uops(w).rob_idx)) ||
++      rob_misp(GetRowIdx(rob.io.commit.uops(w).rob_idx))
 +    when (evt(w) === 0.U) {
 +      when (last_cnt === 0.U) {
 +        pc(w) := next_pc
@@ -221,7 +221,7 @@ index 0f8d39e3..16b875a8 100644
 +      }
 +    }.otherwise {
 +      pc(w) := com_pc
-+      evm(w) := com_evm
++      evm(w) := RegNext(com_evm)
 +    }
 +    // Get PID
 +    when (
