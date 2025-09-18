@@ -22,7 +22,7 @@ index 05821c52..dd1c9032 100644
    val frontendStr = outer.frontend.module.toString
    val coreStr = core.toString
 diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
-index 0f8d39e3..17b3eafc 100644
+index 0f8d39e3..9ac60e42 100644
 --- a/src/main/scala/exu/core.scala
 +++ b/src/main/scala/exu/core.scala
 @@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
@@ -42,7 +42,7 @@ index 0f8d39e3..17b3eafc 100644
    })
  
    io.ptw_tlb := DontCare
-@@ -1492,4 +1493,205 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+@@ -1492,4 +1493,220 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
    } else {
      io.ifu.debug_ftq_idx := DontCare
    }
@@ -57,12 +57,13 @@ index 0f8d39e3..17b3eafc 100644
 +  val level = Wire(UInt(2.W)) // global
 +  val pid   = RegInit(0.U(pidWidth.W))
 +  val pc    = Wire(Vec(coreWidth, UInt(vaddrBits.W))) // per instruction
++  val addr  = Wire(Vec(coreWidth, UInt(vaddrBits.W)))
 +  val stage = Wire(Vec(coreWidth, UInt(stageWidth.W)))
 +  val evt   = RegInit(VecInit(Seq.fill(coreWidth)(0.U(evtWidth.W))))
 +  val evm   = Wire(Vec(coreWidth, Vec(maskWidth, Bool())))
 +  for (w <- 0 until coreWidth) {
 +    io.pm.tag(w)   := RegNext(Cat(pid, level, evt(w)))
-+    io.pm.info(w)  := RegNext(Cat(stage(w), pc(w)))
++    io.pm.info(w)  := RegNext(Cat(addr(w), stage(w), pc(w)))
 +    io.pm.event(w) := RegNext(evm(w).asUInt)
 +  }
 +  // Additional info in ROB
@@ -100,13 +101,14 @@ index 0f8d39e3..17b3eafc 100644
 +    val rob_pid = RegInit(VecInit(Seq.fill(numRobRows)(0.U(pidWidth.W))))
 +    val rob_misp = RegInit(VecInit(Seq.fill(numRobRows)(false.B)))
 +    val rob_taken = RegInit(VecInit(Seq.fill(numRobRows)(false.B)))
-+    val rob_npc = RegInit(VecInit(Seq.fill(numRobRows)(0.U(vaddrBits.W))))
++    val rob_addr = RegInit(VecInit(Seq.fill(numRobRows)(0.U(vaddrBits.W))))
 +    val rob_dtm = RegInit(VecInit(Seq.fill(numRobRows)(false.B)))
 +    val rob_dcm = RegInit(VecInit(Seq.fill(numRobRows)(false.B)))
 +    val rob_cnt = RegInit(VecInit(Seq.fill(numRobRows)(0.U(cntWidth.W))))
 +    val com_pc = Wire(UInt(vaddrBits.W))
 +    val com_cnt = Wire(UInt(cntWidth.W))
 +    val com_evm = Wire(Vec(maskWidth, Bool()))
++    val com_addr = Wire(UInt(vaddrBits.W))
 +    val com_evt = Wire(UInt(evtWidth.W))
 +    // Count for redirect scope
 +    for (i <- 0 until numRobRows) {
@@ -119,6 +121,7 @@ index 0f8d39e3..17b3eafc 100644
 +      when(dis_valids(i) && MatchBank(GetBankIdx(dis_uops(i).rob_idx))) {
 +        rob_stage(GetRowIdx(dis_uops(i).rob_idx)) := 1.U
 +        rob_cnt(GetRowIdx(dis_uops(i).rob_idx)) := 0.U
++        rob_addr(GetRowIdx(dis_uops(i).rob_idx)) := 0.U
 +        rob_misp(GetRowIdx(dis_uops(i).rob_idx)) := false.B
 +        rob_dtm(GetRowIdx(dis_uops(i).rob_idx)) := false.B
 +        rob_dcm(GetRowIdx(dis_uops(i).rob_idx)) := false.B
@@ -145,7 +148,15 @@ index 0f8d39e3..17b3eafc 100644
 +        rob_cnt(GetRowIdx(b.uop.rob_idx)) := Mux(b.mispredict, pipLatency, 0.U)
 +        rob_misp(GetRowIdx(b.uop.rob_idx)) := b.mispredict
 +        rob_taken(GetRowIdx(b.uop.rob_idx)) := b.taken
-+        rob_npc(GetRowIdx(b.uop.rob_idx)) := b.jalr_target
++        rob_addr(GetRowIdx(b.uop.rob_idx)) := b.jalr_target
++      }
++    }
++    // Record memory instruction addresses
++    for (i <- 0 until memWidth) {
++      when (io.lsu.exe(i).req.valid) {
++        when (MatchBank(GetBankIdx(io.lsu.exe(i).req.bits.uop.rob_idx))) {
++          rob_addr(GetRowIdx(io.lsu.exe(i).req.bits.uop.rob_idx)) := io.lsu.exe(i).req.bits.addr
++        }
 +      }
 +    }
 +    // Record DTLB and data cache misses
@@ -185,7 +196,7 @@ index 0f8d39e3..17b3eafc 100644
 +      }.elsewhen (uop.is_jal) {
 +        next_pc := (com_pc.asSInt + ImmGen(uop.imm_packed, IS_J)).asUInt
 +      }.elsewhen (uop.is_jalr) {
-+        next_pc := rob_npc(GetRowIdx(uop.rob_idx))
++        next_pc := rob_addr(GetRowIdx(uop.rob_idx))
 +      }.otherwise {
 +        next_pc := com_pc + Mux(uop.is_rvc, 2.U, 4.U)
 +      }
@@ -210,18 +221,22 @@ index 0f8d39e3..17b3eafc 100644
 +    com_evm(3) :=
 +      rob_dcm(GetRowIdx(rob.io.commit.uops(w).rob_idx)) ||
 +      rob_misp(GetRowIdx(rob.io.commit.uops(w).rob_idx))
++    com_addr := rob_addr(GetRowIdx(rob.io.commit.uops(w).rob_idx))
 +    when (evt(w) === 0.U) {
 +      when (last_cnt === 0.U) {
 +        pc(w) := next_pc
 +        evm(w) := next_evm
 +        stage(w) := next_stage
++        addr(w) := 0.U
 +      }.otherwise {
 +        pc(w) := last_pc
 +        evm(w) := last_evm
++        addr(w) := 0.U
 +      }
 +    }.otherwise {
 +      pc(w) := com_pc
 +      evm(w) := RegNext(com_evm)
++      addr(w) := RegNext(com_addr)
 +    }
 +    // Get PID
 +    when (
