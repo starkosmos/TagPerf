@@ -1,4 +1,5 @@
 # Tcl script to utilize performance monitor
+set pwd 2
 set ewd 4
 set fwd 4
 proc axiwrite { address value } {
@@ -27,10 +28,13 @@ proc get_filter { base idx } {
     return 0x$value,0x$mask
 }
 proc get_all { base } {
-    puts "Control:    [get_control    $base]"
-    puts "Comparator: [get_comparator $base]"
-    for { set i 0 } { $i < $::fwd } { incr i } {
-        puts "Filter $i:  [get_filter $base $i]"
+    for { set i 0 } { $i < $::pwd } { incr i } {
+        puts "Port $i:"
+        puts "    Control:    [get_control    [expr $base + $i * 0x10000]]"
+        puts "    Comparator: [get_comparator [expr $base + $i * 0x10000]]"
+        for { set j 0 } { $j < $::fwd } { incr j } {
+            puts "    Filter $j:  [get_filter [expr $base + $i * 0x10000] $j]"
+        }
     }
 }
 proc set_control { base mask remain } {
@@ -48,8 +52,8 @@ proc get_sample { base } {
     set ctrl 0x[axiread [format %lx [expr $base + 0]]]
     if { ![expr $ctrl & 1] } { return }
     if { [expr $ctrl & 2] } { puts "Warning: half capacity of buffer reached." }
-    set tag  [axiread [format %lx [expr $base + 0x2000]]]
-    set info [axiread [format %lx [expr $base + 0x2008]]]
+    set tag  [axiread [format %lx [expr $base + 0x2008]]]
+    set info [axiread [format %lx [expr $base + 0x2010]]]
     set sample 0x$tag,0x$info
     for { set i 0 } { $i < $::ewd } { incr i } {
         if {$i == 0} { append sample ":" } else { append sample "," }
@@ -62,7 +66,7 @@ proc get_remain { base remain } {
     set ctrl   [get_control $base]
     set mask   [expr ($ctrl >> 32) & 0xFFFFFFFF]
     set_control $base $mask $remain
-    set sample 0x[axiread [format %lx [expr $base + 0x2010]]]
+    set sample 0x[axiread [format %lx [expr $base + 0x2000]]]
     for { set i 0 } { $i < $::ewd } { incr i } {
         if {$i == 0} { append sample ":" } else { append sample "," }
         append sample 0x[axiread [format %lx [expr $base + 0x3000 + 8 * $i]]]
@@ -70,18 +74,20 @@ proc get_remain { base remain } {
     return $sample
 }
 proc clear_buffer { base } {
-    while { [get_sample base] != "" } {}
+    while { [get_sample $base] != "" } {}
 }
 proc auto_sample { base filename } {
     set num 0
     while { 1 } {
-        set sample [get_sample $base]
-        if { [string length $sample] > 0 } {
-            set num [expr $num + 1]
-            puts "Sample $num triggered."
-            set file [open $filename a]
-            puts $file $sample
-            close $file
+        for { set i 0 } { $i < $::pwd } { incr i } {
+            set sample [get_sample [expr $base + $i * 0x10000]]
+            if { [string length $sample] > 0 } {
+                set num [expr $num + 1]
+                puts "Sample $num triggered."
+                set file [open $filename a]
+                puts $file $sample
+                close $file
+            }
         }
     }
 }

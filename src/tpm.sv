@@ -46,9 +46,9 @@ module tpm #(
     | 0x1000: (r)  sample counter 0          |
     | 0x1008: (r)  sample counter 1          |
     |    ...                                 |
-    | 0x2000: (r)  sample tag                |
-    | 0x2008: (r)  sample info               |
-    | 0x2010: (r)  remaining tag             |
+    | 0x2000: (r)  remaining tag             |
+    | 0x2008: (r)  sample tag                |
+    | 0x2010: (r)  sample info               |
     |    ...                                 |
     | 0x3000: (r)  remaining counter 0       |
     | 0x3008: (r)  remaining counter 1       |
@@ -86,7 +86,7 @@ module tpm #(
     always_comb begin
         fevents = 0;
         for (int i = 0; i < filtn; i++)
-            if ((filtm[i] & tag) == (filtm[i] & filtv[i]))
+            if ((filtm[i] & tag) == filtv[i])
                 fevents = evm;
     end
 
@@ -137,8 +137,8 @@ module tpm #(
         ssel          <= 0;
         rsel          <= 0;
         cmp           <= ~64'd0;
-        filtv         <= 0;
-        filtm         <= ~(filtn*twd)'(0);
+        filtv         <= ~(filtn*twd)'(0);
+        filtm         <= 0;
         bvld          <= 0;
         s_axi_arready <= 1;
         s_axi_awready <= 1;
@@ -166,9 +166,9 @@ module tpm #(
                 1: // sample counters
                     s_axi_rdata <= bcnt[32'(s_axi_araddr[11:3])];
                 2: // sample info and tag
-                    if      (s_axi_araddr[11:0] == 12'h000) s_axi_rdata <= 64'(btag);
-                    else if (s_axi_araddr[11:0] == 12'h008) s_axi_rdata <= binfo;
-                    else if (s_axi_araddr[11:0] == 12'h010) s_axi_rdata <= 64'(ctag[32'(rsel)]);
+                    if      (s_axi_araddr[11:0] == 12'h000) s_axi_rdata <= 64'(ctag[32'(rsel)]);
+                    else if (s_axi_araddr[11:0] == 12'h008) s_axi_rdata <= 64'(btag);
+                    else if (s_axi_araddr[11:0] == 12'h010) s_axi_rdata <= binfo;
                 3: // remaining counters
                     s_axi_rdata <= rmdata[32'(s_axi_araddr[11:3])];
             endcase
