@@ -13,7 +13,7 @@ index 16490755304e..5b939b3ce115 100644
  	OFFSET(TASK_THREAD_SP, task_struct, thread.sp);
  	OFFSET(TASK_THREAD_S0, task_struct, thread.s[0]);
 diff --git a/arch/riscv/kernel/entry.S b/arch/riscv/kernel/entry.S
-index 33a5a9f2a0d4..d2fe058f5cc4 100644
+index 33a5a9f2a0d4..7a8d3c4f6d04 100644
 --- a/arch/riscv/kernel/entry.S
 +++ b/arch/riscv/kernel/entry.S
 @@ -399,6 +399,12 @@ SYM_FUNC_START(__switch_to)
@@ -21,8 +21,8 @@ index 33a5a9f2a0d4..d2fe058f5cc4 100644
  	/* Save the kernel shadow call stack pointer */
  	scs_save_current
 +	/* jxy: HINT instruction to send PID info */
-+	lw s1, TASK_PID(a1) // a1: next task_struct
-+	lw s2, TASK_TGID(a1)
++	lw s1, TASK_TGID(a1) // a1: next task_struct
++	lw s2, TASK_PID(a1)
 +	slli s2, s2, 32
 +	or s1, s1, s2
 +	slli zero, s1, 0

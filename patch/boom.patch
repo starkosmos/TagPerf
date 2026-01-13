@@ -22,7 +22,7 @@ index 05821c52..dd1c9032 100644
    val frontendStr = outer.frontend.module.toString
    val coreStr = core.toString
 diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
-index 0f8d39e3..9ac60e42 100644
+index 0f8d39e3..01400fde 100644
 --- a/src/main/scala/exu/core.scala
 +++ b/src/main/scala/exu/core.scala
 @@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
@@ -42,7 +42,7 @@ index 0f8d39e3..9ac60e42 100644
    })
  
    io.ptw_tlb := DontCare
-@@ -1492,4 +1493,220 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+@@ -1492,4 +1493,221 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
    } else {
      io.ifu.debug_ftq_idx := DontCare
    }
@@ -208,6 +208,7 @@ index 0f8d39e3..9ac60e42 100644
 +    when (MatchBank(GetBankIdx(rob.io.rob_head_idx))) {
 +      next_stage := Mux(rob.io.empty, 0.U, rob_stage(GetRowIdx(rob.io.rob_head_idx)))
 +      next_evm := Mux(rob.io.empty, VecInit(Seq.fill(maskWidth)(false.B)), com_evm)
++      next_evm(0) := 1.B
 +    }
 +    // Get stage, event mask and PC
 +    io.ifu.debug_ftq_idx(w) := rob.io.commit.uops(w).ftq_idx
