@@ -1,0 +1,171 @@
+diff --git a/src/cpu/o3/commit.cc b/src/cpu/o3/commit.cc
+index 815d9497ff..bfdc3ea1cf 100644
+--- a/src/cpu/o3/commit.cc
++++ b/src/cpu/o3/commit.cc
+@@ -796,6 +796,13 @@ Commit::commit()
+             rob->squash(squashed_inst, tid);
+             changedROBNumEntries[tid] = true;
+ 
++            // Set attribution limit for squashed instructions
++            const uint64_t pipLat = 7;
++            if (rob->findInst(tid, squashed_inst)) {
++                rob->findInst(tid, squashed_inst)->attrNum = pipLat;
++                rob->findInst(tid, squashed_inst)->attrEvents.misprediction = 1;
++            }
++
+             toIEW->commitInfo[tid].doneSeqNum = squashed_inst;
+ 
+             toIEW->commitInfo[tid].squash = true;
+@@ -871,6 +878,8 @@ Commit::commit()
+     }
+ }
+ 
++uint64_t cycles = 0;
++
+ void
+ Commit::commitInsts()
+ {
+@@ -889,6 +898,19 @@ Commit::commitInsts()
+ 
+     DynInstPtr head_inst;
+ 
++    // Global variables
++    static uint64_t lastPC = 0, lastAttrNum = 0;
++    static DynInst::Events lastAttrEvents;
++    static std::vector<uint64_t> tipSeq;
++    static std::vector<DynInst::Events> tipEv;
++    size_t curNum = 0;
++    // Decay counters in each cycle
++    if (getCommittingThread() != -1)
++        rob->decayCnt(getCommittingThread());
++    if (lastAttrNum > 0)
++        --lastAttrNum;
++
++
+     // Commit as many instructions as possible until the commit bandwidth
+     // limit is reached, or it becomes impossible to commit any more.
+     while (num_committed < commitWidth) {
+@@ -919,6 +941,14 @@ Commit::commitInsts()
+ 
+         head_inst = rob->readHeadInst(commit_thread);
+ 
++        // Allocate TIP cycle attribution entry for each channel
++        while (curNum <= num_committed) {
++            // -1 is an invalid PC for placeholder
++            tipSeq.push_back(lastAttrNum > 0 ? lastPC : -1);
++            tipEv.push_back(lastAttrEvents);
++            ++curNum;
++        }
++
+         ThreadID tid = head_inst->threadNumber;
+ 
+         assert(tid == commit_thread);
+@@ -1006,6 +1036,22 @@ Commit::commitInsts()
+                     cpu->checker->verify(head_inst);
+                 }
+ 
++                // An instruction is committed and we attribute previously
++                // unassigned cycles to it.
++                lastPC = pc[tid]->instAddr();
++                lastAttrNum = head_inst->attrNum;
++                lastAttrEvents = head_inst->attrEvents;
++                auto iterSeq = tipSeq.begin();
++                auto iterEv = tipEv.begin();
++                while (iterSeq != tipSeq.end() && iterEv != tipEv.end()) {
++                    if (*iterSeq == -1) {
++                        *iterSeq = lastPC;
++                        *iterEv = lastAttrEvents;
++                    }
++                    ++iterSeq;
++                    ++iterEv;
++                }
++
+                 cpu->traceFunctions(pc[tid]->instAddr());
+ 
+                 head_inst->staticInst->advancePC(*pc[tid]);
+@@ -1075,6 +1121,35 @@ Commit::commitInsts()
+         }
+     }
+ 
++    // Fill unready entries
++    for (int i = curNum; i < commitWidth; i++) {
++        tipSeq.push_back(lastAttrNum > 0 ? lastPC : -1);
++        tipEv.push_back(lastAttrEvents);
++    }
++
++    // Process determined TIP cycle attributions
++    static uint64_t rcyc = 0, acyc = 0, interval = 1, warmup = 0, maxSample = uint64_t(-1);
++    static FILE *fp = fopen("m5out/tip_sample.txt", "w");
++    if (fp == NULL)
++        exit(-1);
++    interval = 800000;
++    // warmup = 1000000000;
++    while (!tipSeq.empty() && tipSeq[0] != -1) {
++        if (acyc > warmup && acyc % interval == 0) {
++            fprintf(fp, "[TIP] real cycle: %ld  attr cycle: %ld  PC: 0x%lx  MISP: %d  DCM: %d\n",
++                rcyc, acyc, tipSeq[0], tipEv[0].misprediction, tipEv[0].dcacheMiss);
++        }
++
++        ++acyc;
++        if (acyc > warmup && acyc - warmup > maxSample * interval)
++            exit(0);
++        tipSeq.erase(tipSeq.begin());
++        tipEv.erase(tipEv.begin());
++    }
++    ++rcyc;
++
++    ++cycles;
++
+     DPRINTF(CommitRate, "%i\n", num_committed);
+     stats.numCommittedDist.sample(num_committed);
+ 
+diff --git a/src/cpu/o3/dyn_inst.hh b/src/cpu/o3/dyn_inst.hh
+index f8ed7c13d1..57ddf852ba 100644
+--- a/src/cpu/o3/dyn_inst.hh
++++ b/src/cpu/o3/dyn_inst.hh
+@@ -123,6 +123,14 @@ class DynInst : public ExecContext, public RefCounted
+     /** The sequence number of the instruction. */
+     InstSeqNum seqNum = 0;
+ 
++    /** Attrubution cycles for squashed instructions **/
++    uint64_t attrNum = 0;
++    struct Events {
++        uint8_t misprediction = 0;
++        uint8_t itlbMiss = 0, dtlbMiss = 0;
++        uint8_t icacheMiss = 0, dcacheMiss = 0;
++    } attrEvents;
++
+     /** The StaticInst used by this BaseDynInst. */
+     const StaticInstPtr staticInst;
+ 
+diff --git a/src/cpu/o3/rob.cc b/src/cpu/o3/rob.cc
+index 3719ce0f65..728159cbdb 100644
+--- a/src/cpu/o3/rob.cc
++++ b/src/cpu/o3/rob.cc
+@@ -521,5 +521,13 @@ ROB::findInst(ThreadID tid, InstSeqNum squash_inst)
+     return NULL;
+ }
+ 
++void ROB::decayCnt(ThreadID tid)
++{
++    for (InstIt it = instList[tid].begin(); it != instList[tid].end(); it++) {
++        if ((*it)->attrNum > 0)
++            (*it)->attrNum--;
++    }
++}
++
+ } // namespace o3
+ } // namespace gem5
+diff --git a/src/cpu/o3/rob.hh b/src/cpu/o3/rob.hh
+index b3aa5b3ebb..ef8074beca 100644
+--- a/src/cpu/o3/rob.hh
++++ b/src/cpu/o3/rob.hh
+@@ -266,6 +266,8 @@ class ROB
+      */
+     size_t countInsts(ThreadID tid);
+ 
++    void decayCnt(ThreadID tid);
++
+   private:
+     /** Reset the ROB state */
+     void resetState();

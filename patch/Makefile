@@ -9,4 +9,7 @@ patch :
 	@cd ../vivado-risc-v/rocket-chip/ && git apply ../../patch/rocket.patch
 	@echo "Applying patches to VHDL Wrapper..."
 	@cd ../vivado-risc-v/ && git apply ../patch/vhdl.patch
+	@echo "Applying patches to gem5..."
+	@cd ../gem5/ && git apply ../patch/gem5.patch
 	@echo "Patches applied successfully."
+	@cd ..
