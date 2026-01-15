@@ -1,3 +1,8 @@
+# Indirect Branch Predictor Added
+
+This branch `add_ibp` is to optimize BOOMv3 with additional
+branch predictor for normal indirect jump, i.e., JALR.
+
 # Tag-based Performance Monitor
 
 This repository includes a tag-based performance monitor and

@@ -1,3 +1,16 @@
+diff --git a/src/main/scala/common/config-mixins.scala b/src/main/scala/common/config-mixins.scala
+index 5de8ebf4..82252406 100644
+--- a/src/main/scala/common/config-mixins.scala
++++ b/src/main/scala/common/config-mixins.scala
+@@ -156,7 +156,7 @@ class WithNMediumBooms(n: Int = 1, overrideIdOffset: Option[Int] = None) extends
+               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
+             ),
+             dcache = Some(
+-              DCacheParams(rowBits = 64, nSets=64, nWays=4, nMSHRs=2, nTLBWays=8)
++              DCacheParams(rowBits = 64, nSets=64, nWays=4, nMSHRs=2, nTLBWays=16)
+             ),
+             icache = Some(
+               ICacheParams(rowBits = 64, nSets=64, nWays=4, fetchBytes=2*4)
 diff --git a/src/main/scala/common/tile.scala b/src/main/scala/common/tile.scala
 index 05821c52..dd1c9032 100644
 --- a/src/main/scala/common/tile.scala
@@ -22,7 +35,7 @@ index 05821c52..dd1c9032 100644
    val frontendStr = outer.frontend.module.toString
    val coreStr = core.toString
 diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
-index 0f8d39e3..01400fde 100644
+index 0f8d39e3..90a5f624 100644
 --- a/src/main/scala/exu/core.scala
 +++ b/src/main/scala/exu/core.scala
 @@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
@@ -42,15 +55,15 @@ index 0f8d39e3..01400fde 100644
    })
  
    io.ptw_tlb := DontCare
-@@ -1492,4 +1493,221 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+@@ -1492,4 +1493,227 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
    } else {
      io.ifu.debug_ftq_idx := DontCare
    }
 +
 +  // jxy: performance monitor
 +  val maskWidth = 4
-+  val pidWidth = 12
-+  val evtWidth = 2
++  val pidWidth = 11
++  val evtWidth = 3
 +  val stageWidth = 2
 +  val cntWidth = 4
 +  val pipLatency = 14.U
@@ -248,12 +261,18 @@ index 0f8d39e3..01400fde 100644
 +      pid := rob_pid(GetRowIdx(rob.io.commit.uops(w).rob_idx))
 +    }
 +    // Get event tag
-+    when (rob.io.commit.uops(w).uopc === uopLD || rob.io.commit.uops(w).uopc === uopSTA) {
-+      com_evt := 1.U // EVT::MEM
-+    }.elsewhen (rob.io.commit.uops(w).is_br || rob.io.commit.uops(w).is_jal || rob.io.commit.uops(w).is_jalr) {
-+      com_evt := 2.U // EVT::BRANCH
++    when (rob.io.commit.uops(w).is_jalr && rob.io.commit.uops(w).ldst === 0.U && (
++      rob.io.commit.uops(w).lrs1 === 1.U || rob.io.commit.uops(w).lrs1 === 5.U
++    )) {
++      com_evt := 1.U // EVT::RET
++    }.elsewhen (rob.io.commit.uops(w).is_jalr) {
++      com_evt := 2.U // EVT:JALR
++    }.elsewhen (rob.io.commit.uops(w).is_br) {
++      com_evt := 3.U // EVT:BRANCH
++    }.elsewhen (rob.io.commit.uops(w).is_jal) {
++      com_evt := 4.U // EVT:JAL
 +    }.otherwise {
-+      com_evt := 3.U // EVT::OTHERS
++      com_evt := 5.U // EVT::OTHERS
 +    }
 +    when (!rob.io.commit.valids(w)) {
 +      evt(w) := 0.U // EVT::NULL
