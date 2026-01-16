@@ -1,5 +1,5 @@
 diff --git a/src/main/scala/common/config-mixins.scala b/src/main/scala/common/config-mixins.scala
-index 5de8ebf4..82252406 100644
+index 5de8ebf4..84798e05 100644
 --- a/src/main/scala/common/config-mixins.scala
 +++ b/src/main/scala/common/config-mixins.scala
 @@ -156,7 +156,7 @@ class WithNMediumBooms(n: Int = 1, overrideIdOffset: Option[Int] = None) extends
@@ -11,6 +11,35 @@ index 5de8ebf4..82252406 100644
              ),
              icache = Some(
                ICacheParams(rowBits = 64, nSets=64, nWays=4, fetchBytes=2*4)
+@@ -437,23 +437,25 @@ class WithNCS152DefaultBooms(n: Int = 1, overrideIdOffset: Option[Int] = None) e
+ class WithTAGELBPD extends Config((site, here, up) => {
+   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+     case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+-      bpdMaxMetaLength = 120,
++      bpdMaxMetaLength = 140,
+       globalHistoryLength = 64,
+       localHistoryLength = 1,
+       localHistoryNSets = 0,
+       branchPredictor = ((resp_in: BranchPredictionBankResponse, p: Parameters) => {
+         val loop = Module(new LoopBranchPredictorBank()(p))
+         val tage = Module(new TageBranchPredictorBank()(p))
++        val ibp = Module(new IndirectBranchPredictorBank()(p))
+         val btb = Module(new BTBBranchPredictorBank()(p))
+         val bim = Module(new BIMBranchPredictorBank()(p))
+         val ubtb = Module(new FAMicroBTBBranchPredictorBank()(p))
+-        val preds = Seq(loop, tage, btb, ubtb, bim)
++        val preds = Seq(loop, tage, ibp, btb, ubtb, bim)
+         preds.map(_.io := DontCare)
+ 
+         ubtb.io.resp_in(0)  := resp_in
+         bim.io.resp_in(0)   := ubtb.io.resp
+         btb.io.resp_in(0)   := bim.io.resp
+-        tage.io.resp_in(0)  := btb.io.resp
++        ibp.io.resp_in(0)   := btb.io.resp
++        tage.io.resp_in(0)  := ibp.io.resp
+         loop.io.resp_in(0)  := tage.io.resp
+ 
+         (preds, loop.io.resp)
 diff --git a/src/main/scala/common/tile.scala b/src/main/scala/common/tile.scala
 index 05821c52..dd1c9032 100644
 --- a/src/main/scala/common/tile.scala
@@ -283,6 +312,191 @@ index 0f8d39e3..90a5f624 100644
 +  // Get privilege level
 +  level := csr.io.status.prv
  }
+diff --git a/src/main/scala/ifu/bpd/ibp.scala b/src/main/scala/ifu/bpd/ibp.scala
+new file mode 100644
+index 00000000..438839fb
+--- /dev/null
++++ b/src/main/scala/ifu/bpd/ibp.scala
+@@ -0,0 +1,167 @@
++package boom.ifu
++
++import chisel3._
++import chisel3.util._
++
++import org.chipsalliance.cde.config.{Field, Parameters}
++import freechips.rocketchip.diplomacy._
++import freechips.rocketchip.tilelink._
++
++import boom.common._
++import boom.util.{BoomCoreStringPrefix}
++
++import scala.math.min
++
++case class BoomIndirectParams(
++  nSets: Int = 128,
++  nWays: Int = 2,
++  tagSz: Int = 16
++)
++
++
++class IndirectBranchPredictorBank(params: BoomIndirectParams = BoomIndirectParams())(implicit p: Parameters)
++  extends BranchPredictorBank()(p)
++{
++  class IBTBEntry extends Bundle {
++    val target = UInt(vaddrBitsExtended.W)
++  }
++  val ibtbEntrySz = vaddrBitsExtended
++
++  class IBTBMeta extends Bundle {
++    val tag = UInt(params.tagSz.W)
++  }
++  val ibtbMetaSz = params.tagSz
++
++  class IBTBPredictMeta extends Bundle {
++    val write_tag = UInt(params.tagSz.W)
++    val write_way = UInt(log2Ceil(nWays).W)
++  }
++
++  // reset
++  val doing_reset = RegInit(true.B)
++  val reset_idx   = RegInit(0.U(log2Ceil(nSets).W))
++  reset_idx := reset_idx + doing_reset
++  when (reset_idx === (nSets-1).U) { doing_reset := false.B }
++
++  // memory structure
++  val mems = Nil
++  val meta = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(ibtbMetaSz.W))) }
++  val ibtb = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(ibtbEntrySz.W))) }
++
++  // read/write ports and data
++  val s1_req_idx = Wire(UInt(log2Ceil(nSets).W))
++  val s1_req_tag = Wire(UInt(params.tagSz.W))
++  val s2_req_tag = RegNext(s1_req_tag)
++  val s2_req_ribtb = VecInit(ibtb.map {
++    b => VecInit(b.read(s1_req_idx, s1_valid).map(_.asTypeOf(new IBTBEntry)))
++  })
++  val s2_req_rmeta = VecInit(meta.map {
++    m => VecInit(m.read(s1_req_idx, s1_valid).map(_.asTypeOf(new IBTBMeta)))
++  })
++  s1_req_tag := fetchIdx(s1_pc) ^ io.f1_ghist
++  s1_req_idx := s1_req_tag(log2Ceil(nSets)-1, 0)
++
++  // tag matching and output results
++  val s2_resp = Wire(Vec(bankWidth, Valid(UInt(vaddrBitsExtended.W))))
++  val s2_hit_ohs = VecInit((0 until bankWidth) map { i =>
++    VecInit((0 until nWays) map { w =>
++      s2_req_rmeta(w)(i).tag === s2_req_tag
++    })
++  })
++  val s2_hits     = s2_hit_ohs.map { oh => oh.reduce(_||_) }
++  val s2_hit_ways = s2_hit_ohs.map { oh => PriorityEncoder(oh) }
++  for (w <- 0 until bankWidth) {
++    val entry_meta = s2_req_rmeta(s2_hit_ways(w))(w)
++    val entry_btb  = s2_req_ribtb(s2_hit_ways(w))(w)
++    s2_resp(w).valid := !doing_reset && s2_valid && s2_hits(w)
++    s2_resp(w).bits  := entry_btb.target
++
++    io.resp.f3(w) := io.resp_in(0).f3(w)
++    when (RegNext(s2_hits(w))) {
++      io.resp.f3(w).predicted_pc := RegNext(s2_resp(w))
++    }
++  }
++
++  // set metadata for write port
++  val s2_meta = Wire(new IBTBPredictMeta)
++  io.f3_meta := RegNext(s2_meta).asUInt
++  val alloc_way = if (nWays > 1) {
++    val r_metas = Cat(
++      VecInit(s2_req_rmeta.map { w => VecInit(w.map(_.tag)) }).asUInt,
++      s2_req_tag(params.tagSz-1,0)
++    )
++    val l = log2Ceil(nWays)
++    val nChunks = (r_metas.getWidth + l - 1) / l
++    val chunks = (0 until nChunks) map { i =>
++      r_metas(min((i+1)*l, r_metas.getWidth)-1, i*l)
++    }
++    chunks.reduce(_^_)
++  } else {
++    0.U
++  }
++  s2_meta.write_tag := RegNext(s1_req_tag)
++  s2_meta.write_way := Mux(s2_hits.reduce(_||_),
++    PriorityEncoder(s2_hit_ohs.map(_.asUInt).reduce(_|_)),
++    alloc_way
++  )
++  override val metaSz = s2_meta.asUInt.getWidth
++
++  // update
++  val s1_update_cfi_idx = s1_update.bits.cfi_idx.bits
++  val s1_update_meta    = s1_update.bits.meta.asTypeOf(new IBTBPredictMeta)
++
++  val s1_update_wibtb_data = Wire(new IBTBEntry)
++  s1_update_wibtb_data.target := s1_update.bits.target.asUInt
++  val s1_update_wibtb_mask = (
++    UIntToOH(s1_update_cfi_idx) &
++    Fill(bankWidth,
++      s1_update.valid &&
++      s1_update.bits.cfi_idx.valid &&
++      s1_update.bits.cfi_is_jalr &&
++      s1_update.bits.is_commit_update
++    )
++  )
++  val s1_update_wmeta_mask = (
++    (s1_update_wibtb_mask | s1_update.bits.br_mask) & (
++      Fill(bankWidth, s1_update.valid && s1_update.bits.is_commit_update) |
++      (Fill(bankWidth, s1_update.valid) & s1_update.bits.btb_mispredicts)
++    )
++  )
++  val s1_update_wmeta_data = Wire(Vec(bankWidth, new IBTBMeta))
++  for (w <- 0 until bankWidth) {
++    s1_update_wmeta_data(w).tag := s1_update_meta.write_tag
++  }
++
++  for (w <- 0 until nWays) {
++    when (doing_reset || s1_update_meta.write_way === w.U || (w == 0 && nWays == 1).B) {
++      // write variables
++      val ibtb_widx = Mux(doing_reset, reset_idx, s1_update_meta.write_tag(log2Ceil(nSets)-1,0))
++      val meta_widx = Mux(doing_reset, reset_idx, s1_update_meta.write_tag(log2Ceil(nSets)-1,0))
++      val ibtb_mask = Mux(doing_reset, ~(0.U(bankWidth.W)), s1_update_wibtb_mask).asBools
++      val meta_mask = Mux(doing_reset, ~(0.U(bankWidth.W)), s1_update_wmeta_mask).asBools
++      val ibtb_wdat = Mux(
++        doing_reset,
++        VecInit(Seq.fill(bankWidth) { 0.U(ibtbEntrySz.W) }),
++        VecInit(Seq.fill(bankWidth) { s1_update_wibtb_data.asUInt })
++      )
++      val meta_wdat = Mux(
++        doing_reset,
++        VecInit(Seq.fill(bankWidth) { 0.U(ibtbMetaSz.W) }),
++        VecInit(s1_update_wmeta_data.map(_.asUInt))
++      )
++      // write entry
++      ibtb(w).write(ibtb_widx, ibtb_wdat, ibtb_mask)
++      meta(w).write(meta_widx, meta_wdat, meta_mask)
++
++      when (ibtb_mask(3) || ibtb_mask(2) || ibtb_mask(1) || ibtb_mask(0)) {
++        printf(
++          "[ibtb write] pc: %x  index: %x  way: %x  mask: %x%x%x%x  target: %x  tag: %x\n",
++          s1_update.bits.pc, ibtb_widx, w.U,
++          ibtb_mask(3), ibtb_mask(2), ibtb_mask(1), ibtb_mask(0),
++          ibtb_wdat(0), meta_wdat(0)
++        )
++      }
++    }
++  }
++}
++
+diff --git a/src/main/scala/ifu/fetch-target-queue.scala b/src/main/scala/ifu/fetch-target-queue.scala
+index 5af74617..a288dd0e 100644
+--- a/src/main/scala/ifu/fetch-target-queue.scala
++++ b/src/main/scala/ifu/fetch-target-queue.scala
+@@ -294,6 +294,7 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
+     io.bpdupdate.bits.target     := bpd_target
+     io.bpdupdate.bits.cfi_is_br  := bpd_entry.br_mask(cfi_idx)
+     io.bpdupdate.bits.cfi_is_jal := bpd_entry.cfi_type === CFI_JAL || bpd_entry.cfi_type === CFI_JALR
++    io.bpdupdate.bits.cfi_is_jalr := bpd_entry.cfi_type === CFI_JALR && !bpd_entry.cfi_is_ret
+     io.bpdupdate.bits.ghist      := bpd_ghist
+     io.bpdupdate.bits.lhist      := bpd_lhist
+     io.bpdupdate.bits.meta       := bpd_meta
 diff --git a/src/main/scala/ifu/frontend.scala b/src/main/scala/ifu/frontend.scala
 index 17bf3b2e..cebaaf2b 100644
 --- a/src/main/scala/ifu/frontend.scala
