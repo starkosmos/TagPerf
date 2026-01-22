@@ -314,10 +314,10 @@ index 0f8d39e3..90a5f624 100644
  }
 diff --git a/src/main/scala/ifu/bpd/ibp.scala b/src/main/scala/ifu/bpd/ibp.scala
 new file mode 100644
-index 00000000..438839fb
+index 00000000..9575004e
 --- /dev/null
 +++ b/src/main/scala/ifu/bpd/ibp.scala
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,157 @@
 +package boom.ifu
 +
 +import chisel3._
@@ -342,6 +342,9 @@ index 00000000..438839fb
 +class IndirectBranchPredictorBank(params: BoomIndirectParams = BoomIndirectParams())(implicit p: Parameters)
 +  extends BranchPredictorBank()(p)
 +{
++  override val nSets         = params.nSets
++  override val nWays         = params.nWays
++
 +  class IBTBEntry extends Bundle {
 +    val target = UInt(vaddrBitsExtended.W)
 +  }
@@ -438,15 +441,11 @@ index 00000000..438839fb
 +      s1_update.valid &&
 +      s1_update.bits.cfi_idx.valid &&
 +      s1_update.bits.cfi_is_jalr &&
++      s1_update.bits.cfi_mispredicted &&
 +      s1_update.bits.is_commit_update
 +    )
 +  )
-+  val s1_update_wmeta_mask = (
-+    (s1_update_wibtb_mask | s1_update.bits.br_mask) & (
-+      Fill(bankWidth, s1_update.valid && s1_update.bits.is_commit_update) |
-+      (Fill(bankWidth, s1_update.valid) & s1_update.bits.btb_mispredicts)
-+    )
-+  )
++  val s1_update_wmeta_mask = s1_update_wibtb_mask
 +  val s1_update_wmeta_data = Wire(Vec(bankWidth, new IBTBMeta))
 +  for (w <- 0 until bankWidth) {
 +    s1_update_wmeta_data(w).tag := s1_update_meta.write_tag
@@ -472,28 +471,23 @@ index 00000000..438839fb
 +      // write entry
 +      ibtb(w).write(ibtb_widx, ibtb_wdat, ibtb_mask)
 +      meta(w).write(meta_widx, meta_wdat, meta_mask)
-+
-+      when (ibtb_mask(3) || ibtb_mask(2) || ibtb_mask(1) || ibtb_mask(0)) {
-+        printf(
-+          "[ibtb write] pc: %x  index: %x  way: %x  mask: %x%x%x%x  target: %x  tag: %x\n",
-+          s1_update.bits.pc, ibtb_widx, w.U,
-+          ibtb_mask(3), ibtb_mask(2), ibtb_mask(1), ibtb_mask(0),
-+          ibtb_wdat(0), meta_wdat(0)
-+        )
-+      }
 +    }
 +  }
 +}
 +
 diff --git a/src/main/scala/ifu/fetch-target-queue.scala b/src/main/scala/ifu/fetch-target-queue.scala
-index 5af74617..a288dd0e 100644
+index 5af74617..886a8281 100644
 --- a/src/main/scala/ifu/fetch-target-queue.scala
 +++ b/src/main/scala/ifu/fetch-target-queue.scala
-@@ -294,6 +294,7 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
+@@ -294,6 +294,11 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
      io.bpdupdate.bits.target     := bpd_target
      io.bpdupdate.bits.cfi_is_br  := bpd_entry.br_mask(cfi_idx)
      io.bpdupdate.bits.cfi_is_jal := bpd_entry.cfi_type === CFI_JAL || bpd_entry.cfi_type === CFI_JALR
-+    io.bpdupdate.bits.cfi_is_jalr := bpd_entry.cfi_type === CFI_JALR && !bpd_entry.cfi_is_ret
++    io.bpdupdate.bits.cfi_is_jalr := bpd_entry.cfi_type === CFI_JALR && !bpd_entry.cfi_is_ret &&
++    // The unequality condition is redundant because it is true when do_commit_update/is_commit_update
++    //   is true, but it results in different behavior if not added. Even just asserting the condition
++    //   can avoid this issue, possibly a Chisel bug.
++      RegNext(WrapInc(bpd_idx, num_entries) =/= enq_ptr)
      io.bpdupdate.bits.ghist      := bpd_ghist
      io.bpdupdate.bits.lhist      := bpd_lhist
      io.bpdupdate.bits.meta       := bpd_meta
