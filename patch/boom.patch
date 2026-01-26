@@ -360,10 +360,10 @@ index 997c9b62..24e72f12 100644
        metas = (metas << c.metaSz) | c.io.f3_meta(c.metaSz-1,0)
 diff --git a/src/main/scala/ifu/bpd/ibp.scala b/src/main/scala/ifu/bpd/ibp.scala
 new file mode 100644
-index 00000000..98197386
+index 00000000..798332ed
 --- /dev/null
 +++ b/src/main/scala/ifu/bpd/ibp.scala
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,169 @@
 +package boom.ifu
 +
 +import chisel3._
@@ -533,7 +533,6 @@ index 00000000..98197386
 +    }
 +  }
 +}
-+
 diff --git a/src/main/scala/ifu/bpd/predictor.scala b/src/main/scala/ifu/bpd/predictor.scala
 index f176c8df..2ad7448e 100644
 --- a/src/main/scala/ifu/bpd/predictor.scala
