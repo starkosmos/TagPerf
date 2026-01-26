@@ -1,7 +1,9 @@
 # Indirect Branch Predictor Added
 
 This branch `add_ibp` is to optimize BOOMv3 with additional
-branch predictor for normal indirect jump, i.e., JALR.
+branch predictor for normal indirect jump, i.e., JALR. Some
+utilities are added into directory `util`, and please refer to
+`README.md` inside its subdirectories.
 
 # Tag-based Performance Monitor
 

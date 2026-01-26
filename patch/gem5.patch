@@ -1,3 +1,133 @@
+diff --git a/src/arch/riscv/insts/vector.hh b/src/arch/riscv/insts/vector.hh
+index b23f4ff471..c531e70482 100644
+--- a/src/arch/riscv/insts/vector.hh
++++ b/src/arch/riscv/insts/vector.hh
+@@ -51,7 +51,7 @@ getVflmul(uint32_t vlmul_encoding);
+ inline uint32_t
+ getSew(uint32_t vsew)
+ {
+-    assert(vsew <= 3);
++    // assert(vsew <= 3);
+     return (8 << vsew);
+ }
+ 
+diff --git a/src/arch/riscv/linux/se_workload.cc b/src/arch/riscv/linux/se_workload.cc
+index 6a1725b3af..365c94d44c 100644
+--- a/src/arch/riscv/linux/se_workload.cc
++++ b/src/arch/riscv/linux/se_workload.cc
+@@ -632,8 +632,8 @@ SyscallDescTable<SEWorkload::SyscallABI64> EmuLinux::syscallDescs64 = {
+     { 99,   "set_robust_list", ignoreWarnOnceFunc },
+     { 100,  "get_robust_list", ignoreWarnOnceFunc },
+     { 101,  "nanosleep", ignoreWarnOnceFunc },
+-    { 102,  "getitimer" },
+-    { 103,  "setitimer" },
++    { 102,  "getitimer", ignoreWarnOnceFunc },
++    { 103,  "setitimer", ignoreWarnOnceFunc },
+     { 104,  "kexec_load" },
+     { 105,  "init_module" },
+     { 106,  "delete_module" },
+@@ -999,8 +999,8 @@ SyscallDescTable<SEWorkload::SyscallABI32> EmuLinux::syscallDescs32 = {
+     { 99,   "set_robust_list", ignoreWarnOnceFunc },
+     { 100,  "get_robust_list", ignoreWarnOnceFunc },
+     { 101,  "nanosleep" },
+-    { 102,  "getitimer" },
+-    { 103,  "setitimer" },
++    { 102,  "getitimer", ignoreWarnOnceFunc },
++    { 103,  "setitimer", ignoreWarnOnceFunc },
+     { 104,  "kexec_load" },
+     { 105,  "init_module" },
+     { 106,  "delete_module" },
+diff --git a/src/cpu/o3/BaseO3CPU.py b/src/cpu/o3/BaseO3CPU.py
+index 79151ad083..b3713c7b3a 100644
+--- a/src/cpu/o3/BaseO3CPU.py
++++ b/src/cpu/o3/BaseO3CPU.py
+@@ -89,8 +89,8 @@ class BaseO3CPU(BaseCPU):
+     renameToFetchDelay = Param.Cycles(1, "Rename to fetch delay")
+     iewToFetchDelay = Param.Cycles(1, "Issue/Execute/Writeback to fetch delay")
+     commitToFetchDelay = Param.Cycles(1, "Commit to fetch delay")
+-    fetchWidth = Param.Unsigned(8, "Fetch width")
+-    fetchBufferSize = Param.Unsigned(64, "Fetch buffer size in bytes")
++    fetchWidth = Param.Unsigned(2, "Fetch width")
++    fetchBufferSize = Param.Unsigned(16, "Fetch buffer size in bytes")
+     fetchQueueSize = Param.Unsigned(
+         32, "Fetch queue size in micro-ops per-thread"
+     )
+@@ -101,14 +101,14 @@ class BaseO3CPU(BaseCPU):
+     )
+     commitToDecodeDelay = Param.Cycles(1, "Commit to decode delay")
+     fetchToDecodeDelay = Param.Cycles(1, "Fetch to decode delay")
+-    decodeWidth = Param.Unsigned(8, "Decode width")
++    decodeWidth = Param.Unsigned(2, "Decode width")
+ 
+     iewToRenameDelay = Param.Cycles(
+         1, "Issue/Execute/Writeback to rename delay"
+     )
+     commitToRenameDelay = Param.Cycles(1, "Commit to rename delay")
+     decodeToRenameDelay = Param.Cycles(1, "Decode to rename delay")
+-    renameWidth = Param.Unsigned(8, "Rename width")
++    renameWidth = Param.Unsigned(2, "Rename width")
+ 
+     commitToIEWDelay = Param.Cycles(
+         1, "Commit to Issue/Execute/Writeback delay"
+@@ -119,8 +119,8 @@ class BaseO3CPU(BaseCPU):
+     issueToExecuteDelay = Param.Cycles(
+         1, "Issue to execute delay (internal to the IEW stage)"
+     )
+-    dispatchWidth = Param.Unsigned(8, "Dispatch width")
+-    issueWidth = Param.Unsigned(8, "Issue width")
++    dispatchWidth = Param.Unsigned(2, "Dispatch width")
++    issueWidth = Param.Unsigned(2, "Issue width")
+     wbWidth = Param.Unsigned(8, "Writeback width")
+     fuPool = Param.FUPool(DefaultFUPool(), "Functional Unit pool")
+ 
+@@ -128,8 +128,8 @@ class BaseO3CPU(BaseCPU):
+         1, "Issue/Execute/Writeback to commit delay"
+     )
+     renameToROBDelay = Param.Cycles(1, "Rename to reorder buffer delay")
+-    commitWidth = Param.Unsigned(8, "Commit width")
+-    squashWidth = Param.Unsigned(8, "Squash width")
++    commitWidth = Param.Unsigned(2, "Commit width")
++    squashWidth = Param.Unsigned(2, "Squash width")
+     trapLatency = Param.Cycles(13, "Trap latency")
+     fetchTrapLatency = Param.Cycles(1, "Fetch trap latency")
+ 
+@@ -140,8 +140,8 @@ class BaseO3CPU(BaseCPU):
+         5, "Time buffer size for forward communication"
+     )
+ 
+-    LQEntries = Param.Unsigned(32, "Number of load queue entries")
+-    SQEntries = Param.Unsigned(32, "Number of store queue entries")
++    LQEntries = Param.Unsigned(16, "Number of load queue entries")
++    SQEntries = Param.Unsigned(16, "Number of store queue entries")
+     LSQDepCheckShift = Param.Unsigned(
+         4, "Number of places to shift addr before check"
+     )
+@@ -173,20 +173,20 @@ class BaseO3CPU(BaseCPU):
+     numRobs = Param.Unsigned(1, "Number of Reorder Buffers")
+ 
+     numPhysIntRegs = Param.Unsigned(
+-        256, "Number of physical integer registers"
++        128, "Number of physical integer registers"
+     )
+     numPhysFloatRegs = Param.Unsigned(
+-        256, "Number of physical floating point registers"
++        64, "Number of physical floating point registers"
+     )
+-    numPhysVecRegs = Param.Unsigned(256, "Number of physical vector registers")
++    numPhysVecRegs = Param.Unsigned(64, "Number of physical vector registers")
+     numPhysVecPredRegs = Param.Unsigned(
+-        32, "Number of physical predicate registers"
++        16, "Number of physical predicate registers"
+     )
+     numPhysMatRegs = Param.Unsigned(2, "Number of physical matrix registers")
+     # most ISAs don't use condition-code regs, so default is 0
+     numPhysCCRegs = Param.Unsigned(0, "Number of physical cc registers")
+     numIQEntries = Param.Unsigned(64, "Number of instruction queue entries")
+-    numROBEntries = Param.Unsigned(192, "Number of reorder buffer entries")
++    numROBEntries = Param.Unsigned(64, "Number of reorder buffer entries")
+ 
+     smtNumFetchingThreads = Param.Unsigned(1, "SMT Number of Fetching Threads")
+     smtFetchPolicy = Param.SMTFetchPolicy("RoundRobin", "SMT Fetch policy")
 diff --git a/src/cpu/o3/commit.cc b/src/cpu/o3/commit.cc
 index 815d9497ff..bfdc3ea1cf 100644
 --- a/src/cpu/o3/commit.cc
@@ -169,3 +299,92 @@ index b3aa5b3ebb..ef8074beca 100644
    private:
      /** Reset the ROB state */
      void resetState();
+diff --git a/src/cpu/pred/BranchPredictor.py b/src/cpu/pred/BranchPredictor.py
+index 47b985242d..211a398551 100644
+--- a/src/cpu/pred/BranchPredictor.py
++++ b/src/cpu/pred/BranchPredictor.py
+@@ -123,12 +123,12 @@ class SimpleBTB(BranchTargetBuffer):
+     cxx_class = "gem5::branch_prediction::SimpleBTB"
+     cxx_header = "cpu/pred/simple_btb.hh"
+ 
+-    numEntries = Param.Unsigned(4096, "Number of BTB entries")
++    numEntries = Param.Unsigned(512, "Number of BTB entries")
+     tagBits = Param.Unsigned(16, "Size of the BTB tags, in bits")
+     instShiftAmt = Param.Unsigned(
+         Parent.instShiftAmt, "Number of bits to shift instructions by"
+     )
+-    associativity = Param.Unsigned(1, "BTB associativity")
++    associativity = Param.Unsigned(2, "BTB associativity")
+     btbReplPolicy = Param.BaseReplacementPolicy(
+         LRURP(), "BTB replacement policy"
+     )
+diff --git a/src/cpu/pred/simple_indirect.cc b/src/cpu/pred/simple_indirect.cc
+index 815e8bf31b..a3aef88f30 100644
+--- a/src/cpu/pred/simple_indirect.cc
++++ b/src/cpu/pred/simple_indirect.cc
+@@ -59,7 +59,7 @@ SimpleIndirectPredictor::SimpleIndirectPredictor(
+       speculativePathLength(params.speculativePathLength),
+       instShift(params.instShiftAmt),
+       ghrNumBits(params.indirectGHRBits),
+-      ghrMask((1 << params.indirectGHRBits)-1),
++      ghrMask(params.indirectGHRBits==64?-1ul:(1ul << params.indirectGHRBits)-1),
+       stats(this)
+ {
+     if (!isPowerOf2(numSets)) {
+@@ -355,7 +355,11 @@ SimpleIndirectPredictor::getSetIndex(Addr br_addr, ThreadID tid)
+ {
+     Addr hash = br_addr >> instShift;
+     if (hashGHR) {
+-        hash ^= threadInfo[tid].ghr;
++        uint64_t ghr = threadInfo[tid].ghr;
++        while (ghr) {
++            hash ^= ghr & (numSets-1);
++            ghr >>= floorLog2(numSets);
++        }
+     }
+     if (hashTargets) {
+         unsigned hash_shift = floorLog2(numSets) / pathLength;
+diff --git a/src/cpu/pred/simple_indirect.hh b/src/cpu/pred/simple_indirect.hh
+index 1106d9dc3a..8e68b48f18 100644
+--- a/src/cpu/pred/simple_indirect.hh
++++ b/src/cpu/pred/simple_indirect.hh
+@@ -84,7 +84,7 @@ class SimpleIndirectPredictor : public IndirectPredictor
+     const unsigned speculativePathLength;
+     const unsigned instShift;
+     const unsigned ghrNumBits;
+-    const unsigned ghrMask;
++    const uint64_t ghrMask;
+ 
+     struct IPredEntry
+     {
+@@ -119,7 +119,7 @@ class SimpleIndirectPredictor : public IndirectPredictor
+         Addr set_index;
+         Addr tag;
+         bool hit;
+-        unsigned ghr;
++        uint64_t ghr;
+         uint64_t pathHist;
+ 
+         bool was_indirect;
+@@ -137,7 +137,7 @@ class SimpleIndirectPredictor : public IndirectPredictor
+         // Path history register
+         std::deque<HistoryEntry> pathHist;
+         // Global direction history register
+-        unsigned ghr = 0;
++        uint64_t ghr = 0;
+     };
+ 
+     std::vector<ThreadInfo> threadInfo;
+diff --git a/src/python/gem5/simulate/exit_event.py b/src/python/gem5/simulate/exit_event.py
+index 5a0bb3d1d7..7584a63627 100644
+--- a/src/python/gem5/simulate/exit_event.py
++++ b/src/python/gem5/simulate/exit_event.py
+@@ -98,6 +98,8 @@ class ExitEvent(Enum):
+             return ExitEvent.SIMPOINT_BEGIN
+         elif exit_string == "a thread reached the max instruction count":
+             return ExitEvent.MAX_INSTS
++        elif exit_string == "all threads reached the max instruction count":
++            return ExitEvent.MAX_INSTS
+         elif exit_string == "performance counter enabled":
+             return ExitEvent.PERF_COUNTER_ENABLE
+         elif exit_string == "performance counter disabled":
