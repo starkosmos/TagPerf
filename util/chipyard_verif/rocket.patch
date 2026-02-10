@@ -1,0 +1,47 @@
+diff --git a/src/main/scala/rocket/TLB.scala b/src/main/scala/rocket/TLB.scala
+index 8cc4a2c67..fe93a4475 100644
+--- a/src/main/scala/rocket/TLB.scala
++++ b/src/main/scala/rocket/TLB.scala
+@@ -328,6 +328,11 @@ class TLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge: T
+     val ptw = new TLBPTWIO
+     /** suppress a TLB refill, one cycle after a miss */
+     val kill = Input(Bool())
++    /** jxy: performance monitor **/
++    val perf = Output(new Bundle {
++      val miss = Output(Bool())
++      val vadd = Output(UInt(vaddrBitsExtended.W))
++    })
+   })
+   io.ptw.customCSRs := DontCare
+ 
+@@ -756,4 +761,8 @@ class TLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge: T
+     val valids = set.map(_.valid.orR).asUInt
+     Mux(valids.andR, alt, PriorityEncoder(~valids))
+   }
++
++  /* jxy: performance monitor */
++  io.perf.miss := io.ptw.req.fire
++  io.perf.vadd := io.ptw.req.bits.bits.addr
+ }
+diff --git a/src/main/scala/util/ExtPerfMonitor.scala b/src/main/scala/util/ExtPerfMonitor.scala
+new file mode 100644
+index 000000000..757619351
+--- /dev/null
++++ b/src/main/scala/util/ExtPerfMonitor.scala
+@@ -0,0 +1,16 @@
++package freechips.rocketchip.util
++
++import chisel3._
++import freechips.rocketchip.diplomacy.{BundleBridgeNexusNode, LazyModuleImpLike}
++import freechips.rocketchip.subsystem._
++
++class PmSignals(
++    coreWidth: Int = 2,
++    tagWidth: Int = 16,
++    infoWidth: Int = 64,
++    eventWidth: Int = 4
++) extends Bundle {
++    val tag   = Output(Vec(coreWidth, UInt(tagWidth.W)))
++    val info  = Output(Vec(coreWidth, UInt(infoWidth.W)))
++    val event = Output(Vec(coreWidth, UInt(eventWidth.W)))
++}

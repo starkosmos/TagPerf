@@ -15,9 +15,9 @@ Then load the file and a file containing intermediate code as
 argument in Verilator simulation.
 
 Besides, some Chisel code to print extra logs is requied in IBP
-class, add the Chisel code in the comments of `verif.cpp` into
-class `IndirectBranchPredictorBank` and it will generate extra
-logs in `*.out` file.
+class, patch Rochet Chip and BOOM in Chipyard v1.13.0 using
+`chipyard.patch` and it will add IBP to Chipyard and generate
+extra logs in `*.out` file.
 
 The `*.out` file contains information of commit information and
 IBP predictions, redirect it as standard input to program

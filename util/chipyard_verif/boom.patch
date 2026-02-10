@@ -1,17 +1,48 @@
-diff --git a/src/main/scala/common/config-mixins.scala b/src/main/scala/common/config-mixins.scala
-index 5de8ebf4..84798e05 100644
---- a/src/main/scala/common/config-mixins.scala
-+++ b/src/main/scala/common/config-mixins.scala
-@@ -156,7 +156,7 @@ class WithNMediumBooms(n: Int = 1, overrideIdOffset: Option[Int] = None) extends
-               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
-             ),
-             dcache = Some(
--              DCacheParams(rowBits = 64, nSets=64, nWays=4, nMSHRs=2, nTLBWays=8)
-+              DCacheParams(rowBits = 64, nSets=64, nWays=4, nMSHRs=2, nTLBWays=16)
-             ),
-             icache = Some(
-               ICacheParams(rowBits = 64, nSets=64, nWays=4, fetchBytes=2*4)
-@@ -437,23 +437,25 @@ class WithNCS152DefaultBooms(n: Int = 1, overrideIdOffset: Option[Int] = None) e
+diff --git a/src/main/scala/v3/common/config-mixins.scala b/src/main/scala/v3/common/config-mixins.scala
+index ca0e2796..a146f199 100644
+--- a/src/main/scala/v3/common/config-mixins.scala
++++ b/src/main/scala/v3/common/config-mixins.scala
+@@ -83,6 +83,7 @@ class WithRationalBoomTiles extends Config((site, here, up) => {
+  * 1-wide BOOM.
+  */
+ class WithNSmallBooms(n: Int = 1) extends Config(
++  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+   new WithTAGELBPD ++ // Default to TAGE-L BPD
+   new Config((site, here, up) => {
+     case TilesLocated(InSubsystem) => {
+@@ -129,6 +130,7 @@ class WithNSmallBooms(n: Int = 1) extends Config(
+  * 2-wide BOOM.
+  */
+ class WithNMediumBooms(n: Int = 1) extends Config(
++  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+   new WithTAGELBPD ++ // Default to TAGE-L BPD
+   new Config((site, here, up) => {
+     case TilesLocated(InSubsystem) => {
+@@ -175,6 +177,7 @@ class WithNMediumBooms(n: Int = 1) extends Config(
+  * 3-wide BOOM. Try to match the Cortex-A15.
+  */
+ class WithNLargeBooms(n: Int = 1) extends Config(
++  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+   new WithTAGELBPD ++ // Default to TAGE-L BPD
+   new Config((site, here, up) => {
+     case TilesLocated(InSubsystem) => {
+@@ -221,6 +224,7 @@ class WithNLargeBooms(n: Int = 1) extends Config(
+  * 4-wide BOOM.
+  */
+ class WithNMegaBooms(n: Int = 1) extends Config(
++  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+   new WithTAGELBPD ++ // Default to TAGE-L BPD
+   new Config((site, here, up) => {
+     case TilesLocated(InSubsystem) => {
+@@ -267,6 +271,7 @@ class WithNMegaBooms(n: Int = 1) extends Config(
+  * 5-wide BOOM.
+   */
+ class WithNGigaBooms(n: Int = 1) extends Config(
++  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+   new WithTAGELBPD ++ // Default to TAGE-L BPD
+   new Config((site, here, up) => {
+     case TilesLocated(InSubsystem) => {
+@@ -437,23 +442,25 @@ class WithNCS152DefaultBooms(n: Int = 1) extends Config(
  class WithTAGELBPD extends Config((site, here, up) => {
    case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
      case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
@@ -40,11 +71,11 @@ index 5de8ebf4..84798e05 100644
          loop.io.resp_in(0)  := tage.io.resp
  
          (preds, loop.io.resp)
-diff --git a/src/main/scala/common/parameters.scala b/src/main/scala/common/parameters.scala
-index 47da9ee5..d85443cf 100644
---- a/src/main/scala/common/parameters.scala
-+++ b/src/main/scala/common/parameters.scala
-@@ -65,6 +65,8 @@ case class BoomCoreParams(
+diff --git a/src/main/scala/v3/common/parameters.scala b/src/main/scala/v3/common/parameters.scala
+index 2f5e1268..d59d78df 100644
+--- a/src/main/scala/v3/common/parameters.scala
++++ b/src/main/scala/v3/common/parameters.scala
+@@ -66,6 +66,8 @@ case class BoomCoreParams(
    bpdMaxMetaLength: Int = 120,
    numRasEntries: Int = 32,
    enableRasTopRepair: Boolean = true,
@@ -53,7 +84,7 @@ index 47da9ee5..d85443cf 100644
  
    /* more stuff */
    useCompressed: Boolean = true,
-@@ -257,6 +259,9 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
+@@ -258,6 +260,9 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
  
    val useLHist = localHistoryNSets > 1 && localHistoryLength > 1
  
@@ -63,33 +94,10 @@ index 47da9ee5..d85443cf 100644
    //************************************
    // Extra Knobs and Features
    val enableCommitMapTable = boomParams.enableCommitMapTable
-diff --git a/src/main/scala/common/tile.scala b/src/main/scala/common/tile.scala
-index 05821c52..dd1c9032 100644
---- a/src/main/scala/common/tile.scala
-+++ b/src/main/scala/common/tile.scala
-@@ -6,7 +6,7 @@
- package boom.common
- 
- import chisel3._
--import chisel3.util.{RRArbiter, Queue}
-+import chisel3.util._
- 
- import scala.collection.mutable.{ListBuffer}
- 
-@@ -243,6 +243,9 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
-   lsu.io.hellacache <> hellaCacheArb.io.mem
-   outer.dcache.module.io.lsu <> lsu.io.dmem
- 
-+  // External performance monitor
-+  outer.pmSourceNode.bundle <> core.io.pm
-+
-   // Generate a descriptive string
-   val frontendStr = outer.frontend.module.toString
-   val coreStr = core.toString
-diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
-index 0f8d39e3..82fb5be8 100644
---- a/src/main/scala/exu/core.scala
-+++ b/src/main/scala/exu/core.scala
+diff --git a/src/main/scala/v3/exu/core.scala b/src/main/scala/v3/exu/core.scala
+index 751d1cc7..a881a799 100644
+--- a/src/main/scala/v3/exu/core.scala
++++ b/src/main/scala/v3/exu/core.scala
 @@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
  import freechips.rocketchip.rocket.Instructions._
  import freechips.rocketchip.tile.{TraceBundle}
@@ -98,7 +106,7 @@ index 0f8d39e3..82fb5be8 100644
 +import freechips.rocketchip.util.{Str, UIntIsOneOf, CoreMonitorBundle, PmSignals}
  import freechips.rocketchip.devices.tilelink.{PLICConsts, CLINTConsts}
  
- import boom.common._
+ import boom.v3.common._
 @@ -61,6 +61,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
      val ptw_tlb = new freechips.rocketchip.rocket.TLBPTWIO()
      val trace = Output(new TraceBundle)
@@ -107,7 +115,7 @@ index 0f8d39e3..82fb5be8 100644
    })
  
    io.ptw_tlb := DontCare
-@@ -448,7 +449,9 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+@@ -449,7 +450,9 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
        true.B,
        io.ifu.get_pc(1).pc,
        ftq_entry.cfi_is_call && ftq_entry.cfi_idx.bits === cfi_idx,
@@ -118,7 +126,7 @@ index 0f8d39e3..82fb5be8 100644
  
  
      io.ifu.redirect_ghist   := Mux(
-@@ -1492,4 +1495,227 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+@@ -1493,4 +1496,247 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
    } else {
      io.ifu.debug_ftq_idx := DontCare
    }
@@ -342,14 +350,34 @@ index 0f8d39e3..82fb5be8 100644
 +    }.otherwise {
 +      evt(w) := com_evt
 +    }
++
++    when (evt(w) === 2.U) {
++      printf("[commit] pc: %x  misp: %x  target: %x  type: jalr\n", pc(w), evm(w)(3).asUInt, addr(w))
++    }.elsewhen (evt(w) === 3.U) {
++      printf("[commit] pc: %x  misp: %x  target: %x  type: branch\n", pc(w), evm(w)(3).asUInt,
++        RegNext(rob_taken(GetRowIdx(rob.io.commit.uops(w).rob_idx))))
++    }
++
 +  }
 +  // Get privilege level
 +  level := csr.io.status.prv
++
++  // for (w <- 0 until coreWidth) {
++  //   when (evt(w) === 2.U) {
++  //     printf("[jalr] pc: 0x%x, misp: %d\n", pc(w), evm(w)(3).asUInt)
++  //   }
++  // }
++
++  // Output trace
++  // printf("\n");
++  // for (w <- 0 until coreWidth) {
++  //   printf("[commit] pc: %x, addr: %x, stage: %x, evt: %x, evm: %b\n", pc(w), addr(w), stage(w), evt(w), evm(w).asUInt)
++  // }
  }
-diff --git a/src/main/scala/ifu/bpd/composer.scala b/src/main/scala/ifu/bpd/composer.scala
-index 997c9b62..24e72f12 100644
---- a/src/main/scala/ifu/bpd/composer.scala
-+++ b/src/main/scala/ifu/bpd/composer.scala
+diff --git a/src/main/scala/v3/ifu/bpd/composer.scala b/src/main/scala/v3/ifu/bpd/composer.scala
+index acd3ade8..5a90fc53 100644
+--- a/src/main/scala/v3/ifu/bpd/composer.scala
++++ b/src/main/scala/v3/ifu/bpd/composer.scala
 @@ -26,6 +26,7 @@ class ComposedBranchPredictorBank(implicit p: Parameters) extends BranchPredicto
      c.io.f0_mask   := io.f0_mask
      c.io.f1_ghist  := io.f1_ghist
@@ -358,13 +386,13 @@ index 997c9b62..24e72f12 100644
      c.io.f3_fire   := io.f3_fire
      if (c.metaSz > 0) {
        metas = (metas << c.metaSz) | c.io.f3_meta(c.metaSz-1,0)
-diff --git a/src/main/scala/ifu/bpd/ibp.scala b/src/main/scala/ifu/bpd/ibp.scala
+diff --git a/src/main/scala/v3/ifu/bpd/ibp.scala b/src/main/scala/v3/ifu/bpd/ibp.scala
 new file mode 100644
-index 00000000..798332ed
+index 00000000..9a78730b
 --- /dev/null
-+++ b/src/main/scala/ifu/bpd/ibp.scala
-@@ -0,0 +1,169 @@
-+package boom.ifu
++++ b/src/main/scala/v3/ifu/bpd/ibp.scala
+@@ -0,0 +1,198 @@
++package boom.v3.ifu
 +
 +import chisel3._
 +import chisel3.util._
@@ -373,8 +401,8 @@ index 00000000..798332ed
 +import freechips.rocketchip.diplomacy._
 +import freechips.rocketchip.tilelink._
 +
-+import boom.common._
-+import boom.util.{BoomCoreStringPrefix}
++import boom.v3.common._
++import boom.v3.util.{BoomCoreStringPrefix}
 +
 +import scala.math.min
 +
@@ -510,6 +538,34 @@ index 00000000..798332ed
 +    s1_update_wmeta_data(w).tag := s1_update_meta.write_tag
 +  }
 +
++  for (w <- 0 until bankWidth) {
++    when (RegNext(s2_resp(w).valid)) {
++      printf(
++        "[predict] f3_pc: %x  f3_ghist: %x  f3_phist:",
++        RegNext(RegNext(s1_pc + (w.U << 1))),
++        RegNext(RegNext(io.f1_ghist))
++      )
++      val long_folded_phist = (0 until indirectHistoryLength) map {
++        i => io.f1_phist(i * indirectHistoryWidth + params.tagSz - 1, i * indirectHistoryWidth)
++      }
++      for (i <- 0 until indirectHistoryLength) {
++        printf(" %x", RegNext(RegNext(long_folded_phist(indirectHistoryLength - 1 - i))))
++      }
++      printf("  pred_pc: %x\n", io.resp.f3(w).predicted_pc.bits)
++    }
++  }
++
++  when (s1_update.valid && s1_update.bits.cfi_idx.valid && s1_update.bits.is_commit_update) {
++    when (s1_update.bits.cfi_is_jalr) {
++      printf("[update] pc: %x  target: %x  misp: %x  tag: %x  way: %x\n",
++        s1_update.bits.pc + (s1_update.bits.cfi_idx.bits << 1),
++        s1_update.bits.target,
++        s1_update.bits.cfi_mispredicted,
++        s1_update_meta.write_tag,
++        s1_update_meta.write_way)
++    }
++  }
++
 +  for (w <- 0 until nWays) {
 +    when (doing_reset || s1_update_meta.write_way === w.U || (w == 0 && nWays == 1).B) {
 +      // write variables
@@ -533,10 +589,11 @@ index 00000000..798332ed
 +    }
 +  }
 +}
-diff --git a/src/main/scala/ifu/bpd/predictor.scala b/src/main/scala/ifu/bpd/predictor.scala
-index f176c8df..2ad7448e 100644
---- a/src/main/scala/ifu/bpd/predictor.scala
-+++ b/src/main/scala/ifu/bpd/predictor.scala
++
+diff --git a/src/main/scala/v3/ifu/bpd/predictor.scala b/src/main/scala/v3/ifu/bpd/predictor.scala
+index 713117ce..952cb39b 100644
+--- a/src/main/scala/v3/ifu/bpd/predictor.scala
++++ b/src/main/scala/v3/ifu/bpd/predictor.scala
 @@ -144,6 +144,7 @@ abstract class BranchPredictorBank(implicit p: Parameters) extends BoomModule()(
      // Local history not available until end of f1
      val f1_ghist = Input(UInt(globalHistoryLength.W))
@@ -563,10 +620,10 @@ index f176c8df..2ad7448e 100644
      when (bank(io.f0_req.bits.pc) === 0.U) {
        banked_lhist_providers(0).io.f0_valid := io.f0_req.valid
        banked_lhist_providers(0).io.f0_pc    := bankAlign(io.f0_req.bits.pc)
-diff --git a/src/main/scala/ifu/fetch-target-queue.scala b/src/main/scala/ifu/fetch-target-queue.scala
-index 5af74617..b452e6e7 100644
---- a/src/main/scala/ifu/fetch-target-queue.scala
-+++ b/src/main/scala/ifu/fetch-target-queue.scala
+diff --git a/src/main/scala/v3/ifu/fetch-target-queue.scala b/src/main/scala/v3/ifu/fetch-target-queue.scala
+index d66510be..d51994b3 100644
+--- a/src/main/scala/v3/ifu/fetch-target-queue.scala
++++ b/src/main/scala/v3/ifu/fetch-target-queue.scala
 @@ -155,6 +155,7 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
    val prev_ghist = RegInit((0.U).asTypeOf(new GlobalHistory))
    val prev_entry = RegInit((0.U).asTypeOf(new FTQBundle))
@@ -634,11 +691,11 @@ index 5af74617..b452e6e7 100644
  
      ram(RegNext(io.redirect.bits)) := RegNext(redirect_new_entry)
    }
-diff --git a/src/main/scala/ifu/frontend.scala b/src/main/scala/ifu/frontend.scala
-index 17bf3b2e..258370ee 100644
---- a/src/main/scala/ifu/frontend.scala
-+++ b/src/main/scala/ifu/frontend.scala
-@@ -57,6 +57,8 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
+diff --git a/src/main/scala/v3/ifu/frontend.scala b/src/main/scala/v3/ifu/frontend.scala
+index 267940aa..6dd99fc2 100644
+--- a/src/main/scala/v3/ifu/frontend.scala
++++ b/src/main/scala/v3/ifu/frontend.scala
+@@ -56,6 +56,8 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
  
    val ras_idx = UInt(log2Ceil(nRasEntries).W)
  
@@ -647,7 +704,7 @@ index 17bf3b2e..258370ee 100644
    def histories(bank: Int) = {
      if (nBanks == 1) {
        old_history
-@@ -75,14 +77,16 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
+@@ -74,14 +76,16 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
    def ===(other: GlobalHistory): Bool = {
      ((old_history === other.old_history) &&
       (new_saw_branch_not_taken === other.new_saw_branch_not_taken) &&
@@ -666,7 +723,7 @@ index 17bf3b2e..258370ee 100644
      val cfi_idx_fixed = cfi_idx(log2Ceil(fetchWidth)-1,0)
      val cfi_idx_oh = UIntToOH(cfi_idx_fixed)
      val new_history = Wire(new GlobalHistory)
-@@ -123,6 +127,10 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
+@@ -122,6 +126,10 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
      }
      new_history.ras_idx := Mux(cfi_valid && cfi_is_call, WrapInc(ras_idx, nRasEntries),
                             Mux(cfi_valid && cfi_is_ret , WrapDec(ras_idx, nRasEntries), ras_idx))
@@ -677,7 +734,7 @@ index 17bf3b2e..258370ee 100644
      new_history
    }
  
-@@ -286,6 +294,11 @@ class BoomFrontendIO(implicit p: Parameters) extends BoomBundle
+@@ -285,6 +293,11 @@ class BoomFrontendIO(implicit p: Parameters) extends BoomBundle
    val flush_icache = Output(Bool())
  
    val perf = Input(new FrontendPerfEvents)
@@ -689,7 +746,7 @@ index 17bf3b2e..258370ee 100644
  }
  
  /**
-@@ -799,7 +812,9 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
+@@ -798,7 +811,9 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
      f3_fetch_bundle.cfi_idx.valid,
      f3_fetch_bundle.pc,
      f3_fetch_bundle.cfi_is_call,
@@ -700,7 +757,7 @@ index 17bf3b2e..258370ee 100644
    )
  
  
-@@ -985,6 +1000,46 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
+@@ -984,6 +999,46 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
    ftq.io.debug_ftq_idx := io.cpu.debug_ftq_idx
    io.cpu.debug_fetch_pc := ftq.io.debug_fetch_pc
  
@@ -747,11 +804,11 @@ index 17bf3b2e..258370ee 100644
  
    override def toString: String =
      (BoomCoreStringPrefix("====Overall Frontend Params====") + "\n"
-diff --git a/src/main/scala/ifu/icache.scala b/src/main/scala/ifu/icache.scala
-index 916a688f..e7181fc1 100644
---- a/src/main/scala/ifu/icache.scala
-+++ b/src/main/scala/ifu/icache.scala
-@@ -82,6 +82,7 @@ class ICacheBundle(val outer: ICache) extends BoomBundle()(outer.p)
+diff --git a/src/main/scala/v3/ifu/icache.scala b/src/main/scala/v3/ifu/icache.scala
+index b16a68d2..8db9e85a 100644
+--- a/src/main/scala/v3/ifu/icache.scala
++++ b/src/main/scala/v3/ifu/icache.scala
+@@ -81,6 +81,7 @@ class ICacheBundle(val outer: ICache) extends BoomBundle()(outer.p)
  
    val perf = Output(new Bundle {
      val acquire = Bool()
@@ -759,7 +816,7 @@ index 916a688f..e7181fc1 100644
    })
  }
  
-@@ -334,6 +335,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
+@@ -333,6 +334,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
    tl_out.e.valid := false.B
  
    io.perf.acquire := tl_out.a.fire
@@ -767,10 +824,10 @@ index 916a688f..e7181fc1 100644
  
    when (!refill_valid) { invalidated := false.B }
    when (refill_fire) { refill_valid := true.B }
-diff --git a/src/main/scala/lsu/dcache.scala b/src/main/scala/lsu/dcache.scala
-index 9f326f50..64fae1b0 100644
---- a/src/main/scala/lsu/dcache.scala
-+++ b/src/main/scala/lsu/dcache.scala
+diff --git a/src/main/scala/v3/lsu/dcache.scala b/src/main/scala/v3/lsu/dcache.scala
+index 2fc7bd7a..6507efd7 100644
+--- a/src/main/scala/v3/lsu/dcache.scala
++++ b/src/main/scala/v3/lsu/dcache.scala
 @@ -820,6 +820,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
  
    io.lsu.perf.release := edge.done(tl_out.c)
@@ -779,10 +836,10 @@ index 9f326f50..64fae1b0 100644
  
    // load data gen
    val s2_data_word_prebypass = widthMap(w => s2_data_muxed(w) >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits).W)))
-diff --git a/src/main/scala/lsu/lsu.scala b/src/main/scala/lsu/lsu.scala
-index 1eb8ba24..ef57c55d 100644
---- a/src/main/scala/lsu/lsu.scala
-+++ b/src/main/scala/lsu/lsu.scala
+diff --git a/src/main/scala/v3/lsu/lsu.scala b/src/main/scala/v3/lsu/lsu.scala
+index 6eaaa8af..794e72b4 100644
+--- a/src/main/scala/v3/lsu/lsu.scala
++++ b/src/main/scala/v3/lsu/lsu.scala
 @@ -102,6 +102,7 @@ class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
    val perf = Input(new Bundle {
      val acquire = Bool()
@@ -803,7 +860,7 @@ index 1eb8ba24..ef57c55d 100644
  }
  
  class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
-@@ -1651,6 +1657,32 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
+@@ -1652,6 +1658,32 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                      ~(st_exc_killed_mask.asUInt)
  
  
@@ -836,10 +893,10 @@ index 1eb8ba24..ef57c55d 100644
  }
  
  /**
-diff --git a/src/main/scala/lsu/tlb.scala b/src/main/scala/lsu/tlb.scala
-index a09018b4..311b0412 100644
---- a/src/main/scala/lsu/tlb.scala
-+++ b/src/main/scala/lsu/tlb.scala
+diff --git a/src/main/scala/v3/lsu/tlb.scala b/src/main/scala/v3/lsu/tlb.scala
+index 8098e3b0..52f33075 100644
+--- a/src/main/scala/v3/lsu/tlb.scala
++++ b/src/main/scala/v3/lsu/tlb.scala
 @@ -23,6 +23,11 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
      val sfence = Input(Valid(new SFenceReq))
      val ptw = new TLBPTWIO
@@ -852,7 +909,7 @@ index a09018b4..311b0412 100644
    })
    io.ptw := DontCare
    io.resp := DontCare
-@@ -358,4 +363,7 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
+@@ -360,4 +365,7 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
    }
  
  
