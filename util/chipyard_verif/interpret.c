@@ -1,18 +1,19 @@
 #include <stdio.h>
 
 typedef unsigned char u8;
+typedef unsigned short u16;
 typedef unsigned int u32;
 
 #define trace
 
-u8 terminate(u32 *d, u8 (*c)[4], u8 op) {
+u16 terminate(u32 *d, u8 (*c)[4], u16 op) {
 #ifdef TRACE
     printf(" Terminated.");
 #endif
-    return 0xff;
+    return 0xffff;
 }
 
-u8 assign(u32 *d, u8 (*c)[4], u8 op) {
+u16 assign(u32 *d, u8 (*c)[4], u16 op) {
     d[c[op][1]] = (signed char)c[op][2];
 #ifdef TRACE
     printf(" [%d] = %d", c[op][1], d[c[op][1]]);
@@ -20,7 +21,7 @@ u8 assign(u32 *d, u8 (*c)[4], u8 op) {
     return op + 1;
 }
 
-u8 jgz(u32 *d, u8 (*c)[4], u8 op) {
+u16 jgz(u32 *d, u8 (*c)[4], u16 op) {
     int cond = d[c[op][2]] > 0;
 #ifdef TRACE
     printf(cond ? " taken" : " not taken");
@@ -28,7 +29,7 @@ u8 jgz(u32 *d, u8 (*c)[4], u8 op) {
     return cond ? c[op][3] : op + 1;
 }
 
-u8 add(u32 *d, u8 (*c)[4], u8 op) {
+u16 add(u32 *d, u8 (*c)[4], u16 op) {
     d[c[op][1]] = d[c[op][2]] + d[c[op][3]];
 #ifdef TRACE
     printf(" [%d] = %d", c[op][1], d[c[op][1]]);
@@ -36,7 +37,7 @@ u8 add(u32 *d, u8 (*c)[4], u8 op) {
     return op + 1;
 }
 
-u8 sll(u32 *d, u8 (*c)[4], u8 op) {
+u16 sll(u32 *d, u8 (*c)[4], u16 op) {
     d[c[op][1]] = d[c[op][2]] << c[op][3];
 #ifdef TRACE
     printf(" [%d] = %d", c[op][1], d[c[op][1]]);
@@ -44,7 +45,7 @@ u8 sll(u32 *d, u8 (*c)[4], u8 op) {
     return op + 1;
 }
 
-int main(int argc, u8 *argv[]) {
+int main(int argc, char *argv[]) {
     if (argc < 2) {
         printf("Please provide arguments: ./interpret file\n");
         return 0;
@@ -57,8 +58,8 @@ int main(int argc, u8 *argv[]) {
     }
 
     u32 data[256];    // data width is 32, address width is 8
-    u8  code[256][4]; // 4-tuple
-    u8 (*ft[256])(u32 *, u8 (*)[4], u8);
+    u8  code[65536][4]; // 4-tuple
+    u16 (*ft[256])(u32 *, u8 (*)[4], u16);
 
     // initialize operator functions
     for (int i = 0; i < 256; i++)
@@ -70,7 +71,7 @@ int main(int argc, u8 *argv[]) {
     ft['<'] = sll;
 
     // read code from file
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0; i < 65536; i++) {
         code[i][0] = '.';
         while ((code[i][0] = fgetc(fp)) != 0xff && (code[i][0] <= 0x20 || code[i][0] > 0x7e))
             ;
@@ -80,8 +81,8 @@ int main(int argc, u8 *argv[]) {
             break;
     }
 
-    u8 op = 0; // operator pointer
-    while (op != 0xff) {
+    u16 op = 0; // operator pointer
+    while (op != 0xffff) {
 #ifdef TRACE
         printf("%d: %c %02x %02x %02x |", op, code[op][0], code[op][1], code[op][2], code[op][3]);
 #endif

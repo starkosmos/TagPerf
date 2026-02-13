@@ -17,8 +17,9 @@ int main()
     const int nsets = 128;
     const int nways = 2;
     const int tagsz = 16;
+    const int bankw = 4;
     int com = 0, upd = 0, prd = 0;
-    int btb[nsets][nways], tag[nsets][nways], bh[64];
+    unsigned long btb[bankw][nsets][nways], tag[bankw][nsets][nways], bh[64];
     unsigned long ph[phmax];
     int bhptr = 0, phptr = 0;
     memset(btb, 0, sizeof(btb));
@@ -70,7 +71,7 @@ int main()
         {
             // extract updating info
             ++upd;
-            unsigned long pc, target, misp, tag, way;
+            unsigned long pc, target, misp, utag, uway;
             LOCATE(':');
             if (p - 2 > line && STR_EQL(p - 2, "pc"))
                 pc = strtoul(++p, &p, 16);
@@ -82,10 +83,17 @@ int main()
                 misp = strtoul(++p, &p, 16);
             LOCATE(':');
             if (p - 3 > line && STR_EQL(p - 3, "tag"))
-                tag = strtoul(++p, &p, 16);
+                utag = strtoul(++p, &p, 16);
             LOCATE(':');
             if (p - 3 > line && STR_EQL(p - 3, "way"))
-                way = strtoul(++p, &p, 16);
+                uway = strtoul(++p, &p, 16);
+
+            // update table
+            if (misp)
+            {
+                btb[(pc & 7) >> 1][utag & (nsets - 1)][uway] = target;
+                tag[(pc & 7) >> 1][utag & (nsets - 1)][uway] = utag;
+            }
         }
         else if (STR_EQL(p, PRD_STR))
         {
@@ -108,6 +116,19 @@ int main()
             for (int i = 0; i < 64; i++)
                 ghist_unspec = (ghist_unspec << 1) | BH(i);
 
+#ifdef LOG_PRED
+            // output for debugging
+            printf("[predict] pc: %lx  pred: %lx  ghist: %lx  ghist_unspec: %lx",
+                pc, pred, ghist, ghist_unspec);
+            printf("  phist: ");
+            for (int i = 0; i < phmax; i++)
+                printf("%lx ", phist[i]);
+            printf("  phist_unspec: ");
+            for (int i = 0; i < phmax; i++)
+                printf("%lx ", PH(i) & (1ul << phsz) - 1);
+            printf("\n");
+#endif
+
             // check branch history
             unsigned long nz_spec = 0, nz_unspec = 0, x = ghist, y = ghist_unspec;
             while (x)
@@ -116,6 +137,7 @@ int main()
                 ++nz_unspec, y >>= 1;
             const int bcklen = 32;
             // check when effective lengths are long enough
+            x = ghist;
             if (nz_spec >= bcklen && nz_unspec >= bcklen)
             {
                 int match = 0;
@@ -123,12 +145,12 @@ int main()
                 {
                     unsigned long nz = nz_spec < nz_unspec ? nz_spec : nz_unspec;
                     unsigned long mask = nz == 64 ? -1ul : (1ul << nz) - 1;
-                    if ((ghist & mask) == (ghist_unspec & mask))
+                    if ((x & mask) == (ghist_unspec & mask))
                     {
                         match = 1;
                         break;
                     }
-                    ghist >>= 1;
+                    x >>= 1;
                     --nz_spec;
                 }
                 if (!match)
@@ -183,18 +205,27 @@ int main()
                 }
             }
 
-#ifdef LOG_PRED
-            // output for debugging
-            printf("[predict] pc: %lx  pred: %lx  ghist: %lx  ghist_unspec: %lx",
-                pc, pred, ghist, ghist_unspec);
-            printf("  phist: ");
-            for (int i = 0; i < phmax; i++)
-                printf("%lx ", phist[i]);
-            printf("  phist_unspec: ");
-            for (int i = 0; i < phmax; i++)
-                printf("%lx ", PH(i) & (1ul << phsz) - 1);
-            printf("\n");
-#endif
+            // check prediction result
+            unsigned long ptag = ((pc >> 3) ^ ghist) & (1 << tagsz) - 1;
+            int found = 0;
+            for (int i = 0; i < phlen; i++)
+                ptag ^= phist[i];
+            for (int i = 0; i < nways; i++)
+                if (tag[(pc & 7) >> 1][ptag & (nsets - 1)][i] == ptag)
+                {
+                    found = 1;
+                    if (btb[(pc & 7) >> 1][ptag & (nsets - 1)][i] != pred)
+                    {
+                        printf("[Pred checking] pc: %lx  wrong_pred: %lx  correct_pred: %lx\n",
+                            pc, pred, btb[(pc & 7) >> 1][ptag & (nsets - 1)][i]);
+                        exit(1);
+                    }
+                }
+            if (!found)
+            {
+                printf("[Pred checking] pc: %lx  wrong_pred: %lx  correct_pred: N/A\n", pc, pred);
+                exit(1);
+            }
         }
     }
     printf("Total commit entries: %d\n", com);
