@@ -72,14 +72,14 @@ index ca0e2796..a146f199 100644
  
          (preds, loop.io.resp)
 diff --git a/src/main/scala/v3/common/parameters.scala b/src/main/scala/v3/common/parameters.scala
-index 2f5e1268..d59d78df 100644
+index 2f5e1268..dcae480d 100644
 --- a/src/main/scala/v3/common/parameters.scala
 +++ b/src/main/scala/v3/common/parameters.scala
 @@ -66,6 +66,8 @@ case class BoomCoreParams(
    bpdMaxMetaLength: Int = 120,
    numRasEntries: Int = 32,
    enableRasTopRepair: Boolean = true,
-+  indirectHistoryLength: Int = 4,
++  indirectHistoryLength: Int = 8,
 +  indirectHistoryWidth: Int = 16,
  
    /* more stuff */
@@ -95,7 +95,7 @@ index 2f5e1268..d59d78df 100644
    // Extra Knobs and Features
    val enableCommitMapTable = boomParams.enableCommitMapTable
 diff --git a/src/main/scala/v3/exu/core.scala b/src/main/scala/v3/exu/core.scala
-index 751d1cc7..a881a799 100644
+index 751d1cc7..e793c605 100644
 --- a/src/main/scala/v3/exu/core.scala
 +++ b/src/main/scala/v3/exu/core.scala
 @@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
@@ -205,7 +205,6 @@ index 751d1cc7..a881a799 100644
 +      when(dis_valids(i) && MatchBank(GetBankIdx(dis_uops(i).rob_idx))) {
 +        rob_stage(GetRowIdx(dis_uops(i).rob_idx)) := 1.U
 +        rob_cnt(GetRowIdx(dis_uops(i).rob_idx)) := 0.U
-+        rob_addr(GetRowIdx(dis_uops(i).rob_idx)) := 0.U
 +        rob_misp(GetRowIdx(dis_uops(i).rob_idx)) := false.B
 +        rob_dtm(GetRowIdx(dis_uops(i).rob_idx)) := false.B
 +        rob_dcm(GetRowIdx(dis_uops(i).rob_idx)) := false.B
@@ -352,7 +351,8 @@ index 751d1cc7..a881a799 100644
 +    }
 +
 +    when (evt(w) === 2.U) {
-+      printf("[commit] pc: %x  misp: %x  target: %x  type: jalr\n", pc(w), evm(w)(3).asUInt, addr(w))
++      printf("[commit] pc: %x  misp: %x  target: %x  type: jalr\n", pc(w), evm(w)(3).asUInt,
++        RegNext(rob_addr(GetRowIdx(rob.io.commit.uops(w).rob_idx))))
 +    }.elsewhen (evt(w) === 3.U) {
 +      printf("[commit] pc: %x  misp: %x  target: %x  type: branch\n", pc(w), evm(w)(3).asUInt,
 +        RegNext(rob_taken(GetRowIdx(rob.io.commit.uops(w).rob_idx))))

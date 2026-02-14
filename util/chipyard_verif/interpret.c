@@ -22,7 +22,7 @@ u16 assign(u32 *d, u8 (*c)[4], u16 op) {
 }
 
 u16 jgz(u32 *d, u8 (*c)[4], u16 op) {
-    int cond = d[c[op][2]] > 0;
+    int cond = (int)d[c[op][2]] > 0;
 #ifdef TRACE
     printf(cond ? " taken" : " not taken");
 #endif

@@ -13,7 +13,7 @@
 int main()
 {
     const int bhlen = 16;
-    const int phlen = 4, phmax = 4, phsz = 16;
+    const int phlen = 4, phmax = 8, phsz = 16;
     const int nsets = 128;
     const int nways = 2;
     const int tagsz = 16;
@@ -62,7 +62,7 @@ int main()
             // adjacent branch history is not deterministic
             // anyway we do not modify the branch history design
             // so that its verification is not fundamental
-            if (type == 1 && (pc & ~7ul) == (lastpc & ~7ul))
+            if (type == 1 && (pc & ~7ul) == ((lastpc + 2) & ~7ul))
                 memset(bh, 0, sizeof(bh));
             if (type == 1)
                 lastpc = pc;
@@ -162,7 +162,7 @@ int main()
 
             // check path history
             nz_spec = nz_unspec = 0;
-            for (int i = 0; i < phlen; i++)
+            for (int i = 0; i < phmax; i++)
             {
                 if (PH(i))
                     ++nz_unspec;
@@ -179,7 +179,7 @@ int main()
                     int same = 1;
                     for (int i = s; i < nz; i++)
                     {
-                        if ((phist[phlen - 1 - i] & (1ul << phsz) - 1) !=
+                        if ((phist[phmax - 1 - i] & (1ul << phsz) - 1) !=
                             (PH(phmax - 1 - i + s) & (1ul << phsz) - 1))
                         {
                             same = 0;
@@ -195,10 +195,10 @@ int main()
                 if (!match)
                 {
                     printf("[PH checking] pc: %lx  phist: ", pc);
-                    for (int i = 0; i < phlen; i++)
+                    for (int i = 0; i < phmax; i++)
                         printf("%lx ", phist[i]);
                     printf("  phist_unspec: ");
-                    for (int i = 0; i < phlen; i++)
+                    for (int i = 0; i < phmax; i++)
                         printf("%lx ", PH(i) & (1ul << phsz) - 1);
                     printf("\n");
                     exit(1);
@@ -209,7 +209,7 @@ int main()
             unsigned long ptag = ((pc >> 3) ^ ghist) & (1 << tagsz) - 1;
             int found = 0;
             for (int i = 0; i < phlen; i++)
-                ptag ^= phist[i];
+                ptag ^= phist[phmax - 1 - i];
             for (int i = 0; i < nways; i++)
                 if (tag[(pc & 7) >> 1][ptag & (nsets - 1)][i] == ptag)
                 {
