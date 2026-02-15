@@ -388,10 +388,10 @@ index acd3ade8..5a90fc53 100644
        metas = (metas << c.metaSz) | c.io.f3_meta(c.metaSz-1,0)
 diff --git a/src/main/scala/v3/ifu/bpd/ibp.scala b/src/main/scala/v3/ifu/bpd/ibp.scala
 new file mode 100644
-index 00000000..9a78730b
+index 00000000..3bc36485
 --- /dev/null
 +++ b/src/main/scala/v3/ifu/bpd/ibp.scala
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,199 @@
 +package boom.v3.ifu
 +
 +import chisel3._
@@ -555,14 +555,15 @@ index 00000000..9a78730b
 +    }
 +  }
 +
-+  when (s1_update.valid && s1_update.bits.cfi_idx.valid && s1_update.bits.is_commit_update) {
-+    when (s1_update.bits.cfi_is_jalr) {
++  val s2_update = RegNext(s1_update)
++  when (s2_update.valid && s2_update.bits.cfi_idx.valid && s2_update.bits.is_commit_update) {
++    when (s2_update.bits.cfi_is_jalr) {
 +      printf("[update] pc: %x  target: %x  misp: %x  tag: %x  way: %x\n",
-+        s1_update.bits.pc + (s1_update.bits.cfi_idx.bits << 1),
-+        s1_update.bits.target,
-+        s1_update.bits.cfi_mispredicted,
-+        s1_update_meta.write_tag,
-+        s1_update_meta.write_way)
++        s2_update.bits.pc + (s2_update.bits.cfi_idx.bits << 1),
++        s2_update.bits.target,
++        s2_update.bits.cfi_mispredicted,
++        RegNext(s1_update_meta.write_tag),
++        RegNext(s1_update_meta.write_way))
 +    }
 +  }
 +

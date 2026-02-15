@@ -169,7 +169,7 @@ int main()
                 if (phist[i])
                     ++nz_spec;
             }
-            const int pcklen = 4;
+            const int pcklen = phmax;
             if (nz_spec >= pcklen && nz_unspec >= pcklen)
             {
                 int match = 0;
