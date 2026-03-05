@@ -18,7 +18,7 @@ int main()
     const int nways = 2;
     const int tagsz = 16;
     const int bankw = 4;
-    int com = 0, upd = 0, prd = 0;
+    int com = 0, upd = 0, prd = 0, wrt = 0, col = 0;
     unsigned long btb[bankw][nsets][nways], tag[bankw][nsets][nways], bh[64];
     unsigned long ph[phmax];
     int bhptr = 0, phptr = 0;
@@ -91,6 +91,10 @@ int main()
             // update table
             if (misp)
             {
+                ++wrt;
+                if (tag[(pc & 7) >> 1][utag & (nsets - 1)][uway] &&
+                    tag[(pc & 7) >> 1][utag & (nsets - 1)][uway] != utag)
+                    ++col;
                 btb[(pc & 7) >> 1][utag & (nsets - 1)][uway] = target;
                 tag[(pc & 7) >> 1][utag & (nsets - 1)][uway] = utag;
             }
@@ -231,5 +235,7 @@ int main()
     printf("Total commit entries: %d\n", com);
     printf("Total update entries: %d\n", upd);
     printf("Total predict entries: %d\n", prd);
+    printf("Total writen entries: %d\n", wrt);
+    printf("Total collision entries: %d\n", col);
     return 0;
 }

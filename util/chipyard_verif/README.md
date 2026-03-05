@@ -8,11 +8,17 @@ can provide workload for indirect jumps.
 To compile the interpretor, RISC-V toolchain is required, and
 use for example
 ```
-riscv64-unknown-elf-gcc interpret.c -o interpret.riscv
+riscv64-unknown-elf-gcc interpret.c -o interpret.notrace
 ```
 to compile it. Add `-DTRACE` if additional trace is required.
-Then load the file and a file containing intermediate code as
-argument in Verilator simulation.
+Then use the file and a file containing intermediate code as
+arguments of Proxy Kernel in Verilator simulation. For example
+```
+make -j16 run-binary \
+    CONFIG=MediumBoomV3Config LOADMEM=1 TIMEOUT_CYCLES=-1 \
+    BINARY=./benchmarks/pk \
+    BINARY_ARGS="./user/interpret.notrace ./user/interpret.txt"
+```
 
 Besides, some Chisel code to print extra logs is requied in IBP
 class, patch Rochet Chip and BOOM in Chipyard v1.13.0 using
