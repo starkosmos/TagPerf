@@ -21,7 +21,7 @@ int main(int argc, char *argv[])
 
     for (int i = 0; i < 256; i++)
     {
-        printf("=    %d    %d    0\n", i, rand() % 32, 0);
+        printf("=    %d    %d    0\n", i, rand() % 32);
         if (num)
             num--;
     }
@@ -34,7 +34,7 @@ int main(int argc, char *argv[])
         op[0] = rand() % 32;
         op[1] = rand() % 32;
         op[2] = rand() % 32;
-        printf("%c    %d    %d    %d\n", func[opc], op[0], op[1], op[2], op[3]);
+        printf("%c    %d    %d    %d\n", func[opc], op[0], op[1], op[2]);
     }
 
     return 0;
