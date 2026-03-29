@@ -27,4 +27,8 @@ extra logs in `*.out` file.
 
 The `*.out` file contains information of commit information and
 IBP predictions, redirect it as standard input to program
-`verif` and its correctness will be determined.
+`verif` and its correctness will be determined. To align with
+cosimulator, besides parameters, function `hashTag2Idx` should
+be modified to lower bits of tag, and folded path history
+should be modified with no shift operation. Also, lvcP should
+be invalidated.

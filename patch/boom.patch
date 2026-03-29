@@ -1,5 +1,5 @@
 diff --git a/src/main/scala/common/config-mixins.scala b/src/main/scala/common/config-mixins.scala
-index 5de8ebf4..84798e05 100644
+index 5de8ebf4..b716c555 100644
 --- a/src/main/scala/common/config-mixins.scala
 +++ b/src/main/scala/common/config-mixins.scala
 @@ -156,7 +156,7 @@ class WithNMediumBooms(n: Int = 1, overrideIdOffset: Option[Int] = None) extends
@@ -16,7 +16,7 @@ index 5de8ebf4..84798e05 100644
    case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
      case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
 -      bpdMaxMetaLength = 120,
-+      bpdMaxMetaLength = 140,
++      bpdMaxMetaLength = 400,
        globalHistoryLength = 64,
        localHistoryLength = 1,
        localHistoryNSets = 0,
@@ -41,24 +41,28 @@ index 5de8ebf4..84798e05 100644
  
          (preds, loop.io.resp)
 diff --git a/src/main/scala/common/parameters.scala b/src/main/scala/common/parameters.scala
-index 47da9ee5..d85443cf 100644
+index 47da9ee5..888fe364 100644
 --- a/src/main/scala/common/parameters.scala
 +++ b/src/main/scala/common/parameters.scala
-@@ -65,6 +65,8 @@ case class BoomCoreParams(
+@@ -65,6 +65,10 @@ case class BoomCoreParams(
    bpdMaxMetaLength: Int = 120,
    numRasEntries: Int = 32,
    enableRasTopRepair: Boolean = true,
-+  indirectHistoryLength: Int = 4,
++  indirectHistoryLength: Int = 16,
 +  indirectHistoryWidth: Int = 16,
++  loadHistoryLength: Int = 16,
++  loadHistoryWidth: Int = 16,
  
    /* more stuff */
    useCompressed: Boolean = true,
-@@ -257,6 +259,9 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
+@@ -257,6 +261,11 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
  
    val useLHist = localHistoryNSets > 1 && localHistoryLength > 1
  
 +  val indirectHistoryLength = boomParams.indirectHistoryLength
 +  val indirectHistoryWidth = boomParams.indirectHistoryWidth
++  val loadHistoryLength = boomParams.loadHistoryLength
++  val loadHistoryWidth = boomParams.loadHistoryWidth
 +
    //************************************
    // Extra Knobs and Features
@@ -87,7 +91,7 @@ index 05821c52..dd1c9032 100644
    val frontendStr = outer.frontend.module.toString
    val coreStr = core.toString
 diff --git a/src/main/scala/exu/core.scala b/src/main/scala/exu/core.scala
-index 0f8d39e3..053164af 100644
+index 0f8d39e3..4ab314aa 100644
 --- a/src/main/scala/exu/core.scala
 +++ b/src/main/scala/exu/core.scala
 @@ -37,7 +37,7 @@ import org.chipsalliance.cde.config.Parameters
@@ -107,7 +111,21 @@ index 0f8d39e3..053164af 100644
    })
  
    io.ptw_tlb := DontCare
-@@ -448,7 +449,9 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+@@ -241,6 +242,13 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+     mem_units(i).io.lsu_io <> io.lsu.exe(i)
+   }
+ 
++  val load_rob_idx_history = Reg(Vec(loadHistoryLength, UInt(robAddrSz.W)))
++  val load_pc_history = Reg(Vec(loadHistoryLength, UInt(loadHistoryWidth.W)))
++  val load_val_history = Reg(Vec(loadHistoryLength, UInt(loadHistoryWidth.W)))
++
++  io.ifu.load_pc_history := load_pc_history.asUInt
++  io.ifu.load_val_history := load_val_history.asUInt
++
+   //-------------------------------------------------------------
+   // Uarch Hardware Performance Events (HPEs)
+ 
+@@ -448,7 +456,9 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
        true.B,
        io.ifu.get_pc(1).pc,
        ftq_entry.cfi_is_call && ftq_entry.cfi_idx.bits === cfi_idx,
@@ -118,7 +136,52 @@ index 0f8d39e3..053164af 100644
  
  
      io.ifu.redirect_ghist   := Mux(
-@@ -1492,4 +1495,226 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+@@ -515,6 +525,44 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
+     dec_uops(w) := decode_units(w).io.deq.uop
+   }
+ 
++  val next_load_rob_idx_history = WireInit(load_rob_idx_history)
++  val next_load_pc_history = WireInit(load_pc_history)
++  val next_load_val_history = WireInit(load_val_history)
++  val is_load = Wire(Vec(coreWidth, Bool()))
++  for (w <- 0 until coreWidth) {
++    is_load(w) := dis_valids(w) && dis_uops(w).uopc === uopLD
++  }
++  val prefix_sum = Wire(Vec(coreWidth+1, UInt(log2Ceil(coreWidth+1).W)))
++  prefix_sum(0) := 0.U
++  for (w <- 1 until coreWidth + 1) {
++    prefix_sum(w) := prefix_sum(w-1) + is_load(w-1)
++  }
++  next_load_rob_idx_history :=
++    (load_rob_idx_history.asUInt << PopCount(is_load.asUInt) * robAddrSz.U).asTypeOf(load_rob_idx_history)
++  next_load_pc_history :=
++    (load_pc_history.asUInt << PopCount(is_load.asUInt) * loadHistoryWidth.U).asTypeOf(load_pc_history)
++  next_load_val_history :=
++    (load_val_history.asUInt << PopCount(is_load.asUInt) * loadHistoryWidth.U).asTypeOf(load_val_history)
++  for (w <- 0 until coreWidth) {
++    when (is_load(w)) {
++      next_load_rob_idx_history(prefix_sum(coreWidth) - 1.U - prefix_sum(w)) := dis_uops(w).rob_idx
++      next_load_pc_history(prefix_sum(coreWidth) - 1.U - prefix_sum(w)) := dis_uops(w).debug_pc
++      next_load_val_history(prefix_sum(coreWidth) - 1.U - prefix_sum(w)) := 0.U
++    }
++  }
++  for (i <- 0 until memWidth) {
++    when (mem_resps(i).valid) {
++      for (j <- 0 until loadHistoryLength) {
++        when (load_rob_idx_history(j) === mem_resps(i).bits.uop.rob_idx) {
++          next_load_val_history(j.U+PopCount(is_load.asUInt)) := mem_resps(i).bits.data
++        }
++      }
++    }
++  }
++  load_rob_idx_history := next_load_rob_idx_history
++  load_pc_history := next_load_pc_history
++  load_val_history := next_load_val_history
++
+   //-------------------------------------------------------------
+   // FTQ GetPC Port Arbitration
+ 
+@@ -1492,4 +1540,226 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
    } else {
      io.ifu.debug_ftq_idx := DontCare
    }
@@ -346,23 +409,25 @@ index 0f8d39e3..053164af 100644
 +  level := csr.io.status.prv
  }
 diff --git a/src/main/scala/ifu/bpd/composer.scala b/src/main/scala/ifu/bpd/composer.scala
-index 997c9b62..24e72f12 100644
+index 997c9b62..24a1dc79 100644
 --- a/src/main/scala/ifu/bpd/composer.scala
 +++ b/src/main/scala/ifu/bpd/composer.scala
-@@ -26,6 +26,7 @@ class ComposedBranchPredictorBank(implicit p: Parameters) extends BranchPredicto
+@@ -26,6 +26,9 @@ class ComposedBranchPredictorBank(implicit p: Parameters) extends BranchPredicto
      c.io.f0_mask   := io.f0_mask
      c.io.f1_ghist  := io.f1_ghist
      c.io.f1_lhist  := io.f1_lhist
 +    c.io.f1_phist  := io.f1_phist
++    c.io.f1_lphist  := io.f1_lphist
++    c.io.f1_lvhist  := io.f1_lvhist
      c.io.f3_fire   := io.f3_fire
      if (c.metaSz > 0) {
        metas = (metas << c.metaSz) | c.io.f3_meta(c.metaSz-1,0)
 diff --git a/src/main/scala/ifu/bpd/ibp.scala b/src/main/scala/ifu/bpd/ibp.scala
 new file mode 100644
-index 00000000..aa4fd59a
+index 00000000..b5712c82
 --- /dev/null
 +++ b/src/main/scala/ifu/bpd/ibp.scala
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,424 @@
 +package boom.ifu
 +
 +import chisel3._
@@ -378,46 +443,75 @@ index 00000000..aa4fd59a
 +import scala.math.min
 +
 +case class BoomIndirectParams(
-+  bhLen: Int = 16,
-+  phLen: Int = 2,
-+  nSets: Int = 128,
-+  nWays: Int = 2,
++  // bhLen, phLen, nSets, nWays
++  baseTableInfo: Seq[(Int, Int, Int, Int)] = Seq(
++    (4,  1,  256, 1),
++    (8,  2,  256, 1),
++    (16, 4, 1024, 1),
++    (32, 8,  512, 1)
++  ),
++  // nSets, nWays
++  lvcTableInfo: Seq[(Int, Int)] = Seq.fill(16)((16, 2)),
 +  tagSz: Int = 16,
-+  uBitPeriod: Int = 2048
++  maxWays: Int = 8,
++  uBitPeriod: Int = 2048,
++  selSets: Int = 64,
++  selBits: Int = 6,
++  selPeriod: Int = 1048576,
++  lvcSets: Int = 256,
++  lvcCntBits: Int = 3,
++  metaRespBits: Int = 8
 +)
 +
 +class IndirectBranchPredictionTable(
-+  val bhLen: Int, val phLen: Int,
-+  override val nSets: Int, override val nWays: Int,
-+  val tagSz: Int, val uBitPeriod: Int
++  override val nSets: Int, override val nWays: Int, val tagSz: Int, val metaSz: Int
 +)(implicit p: Parameters) extends BoomModule()(p) with HasBoomFrontendParameters
 +{
 +  val io = IO(new Bundle {
-+    val s1_valid                = Input(Bool())
-+    val s1_pc                   = Input(UInt(vaddrBitsExtended.W))
-+    val s1_ghist                = Input(UInt(globalHistoryLength.W))
-+    val s1_phist                = Input(UInt((indirectHistoryLength * indirectHistoryWidth).W))
-+    val update_valid            = Input(Bool())
-+    val update_cfi_idx          = Input(UInt(log2Ceil(bankWidth).W))
-+    val update_cfi_mispredicted = Input(Bool())
-+    val update_pc               = Input(UInt(vaddrBitsExtended.W))
-+    val update_target           = Input(UInt(vaddrBitsExtended.W))
-+    val update_tag              = Input(UInt(tagSz.W))
-+    val update_way              = Input(UInt(log2Ceil(nWays).W))
-+    val s2_resp                 = Output(Vec(bankWidth, Valid(UInt(vaddrBitsExtended.W))))
-+    val s2_tag                  = Output(UInt(tagSz.W))
-+    val s2_way                  = Output(UInt(log2Ceil(nWays).W))
++    val s1_valid          = Input(Bool())
++    val s1_tag            = Input(UInt(tagSz.W))
++    val update_valid_meta = Input(Bool())
++    val update_valid_tag  = Input(Bool())
++    val update_cfi_idx    = Input(UInt(log2Ceil(bankWidth).W))
++    val update_meta       = Input(UInt(metaSz.W))
++    val update_plru       = Input(UInt(nWays.W))
++    val update_tag        = Input(UInt(tagSz.W))
++    val update_way        = Input(UInt(log2Ceil(nWays).W))
++    val update_target     = Input(UInt(vaddrBitsExtended.W))
++    val s2_resp           = Output(Vec(bankWidth, Valid(UInt(vaddrBitsExtended.W))))
++    val s2_meta           = Output(Vec(bankWidth, UInt(metaSz.W)))
++    val s2_plru           = Output(Vec(bankWidth, UInt(nWays.W)))
++    val s2_tag            = Output(UInt(tagSz.W))
++    val s2_way            = Output(Vec(bankWidth, UInt(log2Ceil(nWays).W)))
 +  })
 +
-+  class IBTBEntry extends Bundle {
-+    val target = UInt(vaddrBitsExtended.W)
++  def foldTag2Idx(bits: UInt): UInt = {
++    ((0 until (tagSz + log2Ceil(nSets) - 1) / log2Ceil(nSets)) map { i =>
++      bits(min((i + 1) * log2Ceil(nSets), tagSz) - 1, i * log2Ceil(nSets))
++    }).reduce(_^_)
++    // bits(log2Ceil(nSets) - 1, 0) // uncomment for verification with no folding
 +  }
-+  val ibtbEntrySz = vaddrBitsExtended
 +
-+  class IBTBMeta extends Bundle {
-+    val tag = UInt(tagSz.W)
++  def pLRU(bdt: UInt, nWays: Int): UInt = {
++    val bdt_pos = Wire(Vec(log2Ceil(nWays), Bool()))
++    var bdt_cur = 0.U
++    for (i <- log2Ceil(nWays) - 1 to 0 by -1) {
++      bdt_pos(i) := bdt(bdt_cur)
++      bdt_cur = (bdt_cur << 1) + Mux(bdt(bdt_cur), 2.U, 1.U)
++    }
++    if (nWays > 1) bdt_pos.asUInt else 0.U
 +  }
-+  val ibtbMetaSz = tagSz
++
++  def pLRUNext(bdt: UInt, access: UInt, nWays: Int): UInt = {
++    val new_bdt = Wire(Vec(nWays, Bool()))
++    var bdt_cur = 0.U
++    new_bdt := bdt.asBools
++    for (i <- log2Ceil(nWays) - 1 to 0 by -1) {
++      new_bdt(bdt_cur) := ~access(i)
++      bdt_cur = (bdt_cur << 1) + Mux(access(i), 2.U, 1.U)
++    }
++    new_bdt.asUInt
++  }
 +
 +  // reset
 +  val doing_reset = RegInit(true.B)
@@ -426,105 +520,83 @@ index 00000000..aa4fd59a
 +  when (reset_idx === (nSets-1).U) { doing_reset := false.B }
 +
 +  // memory structure
-+  val meta = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(ibtbMetaSz.W))) }
-+  val ibtb = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(ibtbEntrySz.W))) }
-+
-+  // calculate folded path history
-+  require(bhLen <= globalHistoryLength)
-+  require(tagSz <= indirectHistoryWidth)
-+  require(phLen <= indirectHistoryLength)
-+  val folded_ghist = (0 until (bhLen + tagSz - 1) / tagSz) map {
-+    i => io.s1_ghist(min((i + 1) * tagSz, bhLen) - 1, i * tagSz)
-+  }
-+  val folded_phist = (0 until phLen) map {
-+    i => io.s1_phist(i * indirectHistoryWidth + tagSz - 1, i * indirectHistoryWidth)
-+  }
++  val tags = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(tagSz.W))) }
++  val ibtb = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(vaddrBitsExtended.W))) }
++  val meta = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(metaSz.W))) }
++  val plru = SyncReadMem(nSets, Vec(bankWidth, UInt(nWays.W)))
 +
 +  // read/write ports and data
-+  val s1_req_idx = Wire(UInt(log2Ceil(nSets).W))
-+  val s1_req_tag = Wire(UInt(tagSz.W))
-+  val s2_req_tag = RegNext(s1_req_tag)
-+  val s2_req_ribtb = VecInit(ibtb.map {
-+    b => VecInit(b.read(s1_req_idx, io.s1_valid).map(_.asTypeOf(new IBTBEntry)))
++  val s1_req_idx = foldTag2Idx(io.s1_tag)
++  val s2_req_tag = RegNext(io.s1_tag)
++  val s2_req_ribtb = VecInit(ibtb.map { b =>
++    VecInit(b.read(s1_req_idx, io.s1_valid).map(_.asTypeOf(UInt(vaddrBitsExtended.W))))
 +  })
-+  val s2_req_rmeta = VecInit(meta.map {
-+    m => VecInit(m.read(s1_req_idx, io.s1_valid).map(_.asTypeOf(new IBTBMeta)))
++  val s2_req_rtags = VecInit(tags.map { t =>
++    VecInit(t.read(s1_req_idx, io.s1_valid).map(_.asTypeOf(UInt(tagSz.W))))
 +  })
-+  s1_req_tag := fetchIdx(io.s1_pc) ^ folded_ghist.reduce(_^_) ^ folded_phist.reduce(_^_)
-+  s1_req_idx := s1_req_tag(log2Ceil(nSets)-1, 0)
++  val s2_req_rmeta = VecInit(meta.map { u =>
++    VecInit(u.read(s1_req_idx, io.s1_valid).map(_.asTypeOf(UInt(metaSz.W))))
++  })
++  val s2_req_rplru = VecInit(plru.read(s1_req_idx, io.s1_valid).map(_.asTypeOf(UInt(nWays.W))))
 +
 +  // tag matching and output results
 +  val s2_hit_ohs = VecInit((0 until bankWidth) map { i =>
 +    VecInit((0 until nWays) map { w =>
-+      s2_req_rmeta(w)(i).tag === s2_req_tag
++      s2_req_rtags(w)(i) === s2_req_tag
 +    })
 +  })
 +  val s2_hits     = s2_hit_ohs.map { oh => oh.reduce(_||_) }
 +  val s2_hit_ways = s2_hit_ohs.map { oh => PriorityEncoder(oh) }
 +  for (w <- 0 until bankWidth) {
-+    val entry_meta = s2_req_rmeta(s2_hit_ways(w))(w)
-+    val entry_btb  = s2_req_ribtb(s2_hit_ways(w))(w)
++    val access_way = Mux(s2_hits(w), s2_hit_ways(w), pLRU(s2_req_rplru(w), nWays))
 +    io.s2_resp(w).valid := !doing_reset && RegNext(io.s1_valid) && s2_hits(w)
-+    io.s2_resp(w).bits  := entry_btb.target
++    io.s2_resp(w).bits  := s2_req_ribtb(s2_hit_ways(w))(w)
++    io.s2_meta(w)       := s2_req_rmeta(s2_hit_ways(w))(w)
++    io.s2_plru(w)       := pLRUNext(s2_req_rplru(w), access_way, nWays)
++    io.s2_way (w)       := access_way
 +  }
++  io.s2_tag := s2_req_tag
 +
-+  // set metadata for write port
-+  val alloc_way = if (nWays > 1) {
-+    val r_metas = Cat(
-+      VecInit(s2_req_rmeta.map { w => VecInit(w.map(_.tag)) }).asUInt,
-+      s2_req_tag(tagSz-1,0)
-+    )
-+    val l = log2Ceil(nWays)
-+    val nChunks = (r_metas.getWidth + l - 1) / l
-+    val chunks = (0 until nChunks) map { i =>
-+      r_metas(min((i+1)*l, r_metas.getWidth)-1, i*l)
-+    }
-+    chunks.reduce(_^_)
-+  } else {
-+    0.U
-+  }
-+  io.s2_tag := RegNext(s1_req_tag)
-+  io.s2_way := Mux(s2_hits.reduce(_||_),
-+    PriorityEncoder(s2_hit_ohs.map(_.asUInt).reduce(_|_)),
-+    alloc_way
-+  )
-+
-+  // update
-+  val update_wibtb_data = Wire(new IBTBEntry)
-+  update_wibtb_data.target := io.update_target
-+  val update_wibtb_mask = (
++  // update entry when mispredicted
++  val update_wtag_mask = (
 +    UIntToOH(io.update_cfi_idx) &
-+    Fill(bankWidth,
-+      io.update_valid &&
-+      io.update_cfi_mispredicted
-+    )
++    Fill(bankWidth, io.update_valid_tag)
 +  )
-+  val update_wmeta_mask = update_wibtb_mask
-+  val update_wmeta_data = Wire(Vec(bankWidth, new IBTBMeta))
-+  for (w <- 0 until bankWidth) {
-+    update_wmeta_data(w).tag := io.update_tag
-+  }
-+
++  val update_wmeta_mask = (
++    UIntToOH(io.update_cfi_idx) &
++    Fill(bankWidth, io.update_valid_meta)
++  )
 +  for (w <- 0 until nWays) {
 +    when (doing_reset || io.update_way === w.U || (w == 0 && nWays == 1).B) {
 +      // write variables
-+      val ibtb_widx = Mux(doing_reset, reset_idx, io.update_tag(log2Ceil(nSets)-1,0))
-+      val meta_widx = Mux(doing_reset, reset_idx, io.update_tag(log2Ceil(nSets)-1,0))
-+      val ibtb_mask = Mux(doing_reset, ~(0.U(bankWidth.W)), update_wibtb_mask).asBools
++      val widx      = Mux(doing_reset, reset_idx, foldTag2Idx(io.update_tag))
++      val tags_mask = Mux(doing_reset, ~(0.U(bankWidth.W)), update_wtag_mask).asBools
 +      val meta_mask = Mux(doing_reset, ~(0.U(bankWidth.W)), update_wmeta_mask).asBools
 +      val ibtb_wdat = Mux(
 +        doing_reset,
-+        VecInit(Seq.fill(bankWidth) { 0.U(ibtbEntrySz.W) }),
-+        VecInit(Seq.fill(bankWidth) { update_wibtb_data.asUInt })
++        VecInit(Seq.fill(bankWidth) { 0.U(vaddrBitsExtended.W) }),
++        VecInit(Seq.fill(bankWidth) { io.update_target })
++      )
++      val tags_wdat = Mux(
++        doing_reset,
++        VecInit(Seq.fill(bankWidth) { 0.U(tagSz.W) }),
++        VecInit(Seq.fill(bankWidth) { io.update_tag })
 +      )
 +      val meta_wdat = Mux(
 +        doing_reset,
-+        VecInit(Seq.fill(bankWidth) { 0.U(ibtbMetaSz.W) }),
-+        VecInit(update_wmeta_data.map(_.asUInt))
++        VecInit(Seq.fill(bankWidth) { 0.U(metaSz.W) }),
++        VecInit(Seq.fill(bankWidth) { io.update_meta })
++      )
++      val plru_wdat = Mux(
++        doing_reset,
++        VecInit(Seq.fill(bankWidth) { 0.U(nWays.W) }),
++        VecInit(Seq.fill(bankWidth) { io.update_plru })
 +      )
 +      // write entry
-+      ibtb(w).write(ibtb_widx, ibtb_wdat, ibtb_mask)
-+      meta(w).write(meta_widx, meta_wdat, meta_mask)
++      tags(w).write(widx, tags_wdat, tags_mask)
++      ibtb(w).write(widx, ibtb_wdat, tags_mask)
++      meta(w).write(widx, meta_wdat, meta_mask)
++      plru   .write(widx, plru_wdat, meta_mask)
 +    }
 +  }
 +}
@@ -533,36 +605,247 @@ index 00000000..aa4fd59a
 +  extends BranchPredictorBank()(p)
 +{
 +  class IBTBPredictMeta extends Bundle {
-+    val write_tag = UInt(params.tagSz.W)
-+    val write_way = UInt(log2Ceil(nWays).W)
++    // base predictor meta
++    val base_provider = Vec(bankWidth, Valid(UInt(log2Ceil(params.baseTableInfo.length+1).W)))
++    val base_allocate = Vec(bankWidth, Valid(UInt(log2Ceil(params.baseTableInfo.length+1).W)))
++    val base_hashed   = Vec(bankWidth, Output(UInt(params.metaRespBits.W)))
++    val base_alt_diff = Vec(bankWidth, Output(Bool()))
++    val base_useful   = Vec(bankWidth, Output(Bool()))
++    val base_plru     = Vec(bankWidth, Output(UInt(params.maxWays.W)))
++    val base_prv_tag  = Output(UInt(params.tagSz.W))
++    val base_alc_tag  = Output(UInt(params.tagSz.W))
++    val base_prv_way  = Vec(bankWidth, Output(UInt(log2Ceil(params.maxWays).W)))
++    val base_alc_way  = Vec(bankWidth, Output(UInt(log2Ceil(params.maxWays).W)))
++    // lvc predictor meta
++    val lvc_provider  = Vec(bankWidth, Output(UInt(log2Ceil(params.lvcTableInfo.length).W)))
++    val lvc_hashed    = Vec(bankWidth, Output(UInt(params.metaRespBits.W)))
++    val lvc_cnt       = Vec(bankWidth, Output(UInt(params.lvcCntBits.W)))
++    val lvc_plru      = Vec(bankWidth, Output(UInt(params.maxWays.W)))
++    val lvc_prv_tag   = Output(UInt(params.tagSz.W))
++    val lvc_prv_way   = Vec(bankWidth, Output(UInt(log2Ceil(params.maxWays).W)))
 +  }
 +
-+  val t = Module(new IndirectBranchPredictionTable(
-+    params.bhLen, params.phLen,
-+    params.nSets, params.nWays,
-+    params.tagSz, params.uBitPeriod
-+  ))
++  def foldMetaResp(bits: UInt): UInt = {
++    ((0 until (vaddrBitsExtended + params.metaRespBits - 1) / params.metaRespBits) map {
++      i => bits(min((i + 1) * params.metaRespBits, vaddrBitsExtended) - 1, i * params.metaRespBits)
++    }).reduce(_^_)
++  }
 +
-+  t.io.s1_valid                := s1_valid
-+  t.io.s1_pc                   := s1_pc
-+  t.io.s1_ghist                := io.f1_ghist
-+  t.io.s1_phist                := io.f1_phist
-+  t.io.update_cfi_idx          := s1_update.bits.cfi_idx.bits
-+  t.io.update_cfi_mispredicted := s1_update.bits.cfi_mispredicted
-+  t.io.update_pc               := s1_update.bits.pc
-+  t.io.update_target           := s1_update.bits.target
-+  t.io.update_tag              := s1_update.bits.meta.asTypeOf(new IBTBPredictMeta).write_tag
-+  t.io.update_way              := s1_update.bits.meta.asTypeOf(new IBTBPredictMeta).write_way
-+  t.io.update_valid            := s1_update.valid && s1_update.bits.cfi_idx.valid &&
-+    s1_update.bits.is_commit_update && s1_update.bits.cfi_is_jalr
++  // global update signals
++  val update_valid =
++    s1_update.valid &&                 // valid data
++    s1_update.bits.cfi_idx.valid &&    // a CFI instruction
++    s1_update.bits.is_commit_update && // update on commit
++    s1_update.bits.cfi_is_jalr         // a JALR instruction
++  val update_meta = s1_update.bits.meta.asTypeOf(new IBTBPredictMeta)
++  val update_idx = s1_update.bits.cfi_idx.bits
 +
-+  val s2_meta = Wire(new IBTBPredictMeta)
-+  s2_meta.write_tag := t.io.s2_tag
-+  s2_meta.write_way := t.io.s2_way
++  // tournament selection counters
++  val sel = RegInit(VecInit(Seq.fill(params.selSets)(0.U(params.selBits.W))))
++  val update_sel_old = sel(fetchIdx(s1_update.bits.pc))
++  val update_sel_new = WireInit(update_sel_old)
++  val update_folded_target = foldMetaResp(s1_update.bits.target)
++  when (
++    update_meta.lvc_hashed (update_idx) === update_folded_target &&
++    update_meta.base_hashed(update_idx) =/= update_folded_target
++  ) {
++    val saturated = (1.U << params.selBits) - 1.U
++    update_sel_new := Mux(update_sel_old === saturated, saturated, update_sel_old + 1.U)
++  }.elsewhen (
++    update_meta.lvc_hashed (update_idx) =/= update_folded_target &&
++    update_meta.base_hashed(update_idx) === update_folded_target
++  ) {
++    update_sel_new := Mux(update_sel_old === 0.U, 0.U, update_sel_old - 1.U)
++  }
++  when (update_valid) {
++    sel(fetchIdx(s1_update.bits.pc)) := update_sel_new
++  }
++
++  // responses
++  val s2_lvcsel = RegNext(sel(fetchIdx(s1_pc))(params.selBits-1))
++  val s2_resp = Wire(Vec(bankWidth, Valid(UInt(vaddrBitsExtended.W))))
++  val s2_meta = WireInit(0.U.asTypeOf(new IBTBPredictMeta))
++
++  // base predictor
++  val baseP = params.baseTableInfo.zipWithIndex.map { case ((bhLen, phLen, nSets, nWays), i) =>
++    val t = Module(new IndirectBranchPredictionTable(nSets, nWays, params.tagSz, 1))
++    // calculate folded path history
++    require(bhLen        <= globalHistoryLength)
++    require(phLen        <= indirectHistoryLength)
++    require(params.tagSz <= indirectHistoryWidth)
++    val folded_ghist = if (bhLen > 0) {
++      ((0 until (bhLen + params.tagSz - 1) / params.tagSz) map { j =>
++        io.f1_ghist(min((j + 1) * params.tagSz, bhLen) - 1, j * params.tagSz)
++      }).reduce(_^_)
++    } else {
++      0.U(params.tagSz.W)
++    }
++    val folded_phist = if (phLen > 0) {
++      ((0 until phLen) map { j => {
++        val ph = io.f1_phist(j * indirectHistoryWidth + params.tagSz - 1, j * indirectHistoryWidth)
++        Cat(if (j > 0) ph(j - 1, 0) else 0.U, ph(indirectHistoryWidth - 1, j)) // rotate right shift
++        // ph // uncomment for verification with no shift
++      }}).reduce(_^_)
++    } else {
++      0.U(params.tagSz.W)
++    }
++    // assign F1 stage inputs for prediction
++    t.io.s1_valid := s1_valid
++    t.io.s1_tag   := fetchIdx(s1_pc)(params.tagSz - 1, 0) ^ folded_ghist ^ folded_phist
++    // assign update information
++    val prv = update_meta.base_provider(update_idx).valid && i.U === update_meta.base_provider(update_idx).bits
++    val alc = update_meta.base_allocate(update_idx).valid && i.U === update_meta.base_allocate(update_idx).bits
++    t.io.update_valid_meta := update_valid && (prv || alc && s1_update.bits.cfi_mispredicted)
++    t.io.update_valid_tag  := update_valid && (prv || alc) && s1_update.bits.cfi_mispredicted
++    t.io.update_tag        := Mux(prv, update_meta.base_prv_tag, update_meta.base_alc_tag)
++    t.io.update_way        := Mux(prv, update_meta.base_prv_way(update_idx), update_meta.base_alc_way(update_idx))
++    t.io.update_cfi_idx    := update_idx
++    t.io.update_target     := s1_update.bits.target
++    t.io.update_plru       := update_meta.base_plru(update_idx)
++    t.io.update_meta       := Mux(s1_update.bits.cfi_mispredicted,
++      0.U, Mux(update_meta.base_alt_diff(update_idx), 1.U, update_meta.base_useful(update_idx))
++    )
++    // reset ubit periodically
++    val low  = log2Ceil(params.uBitPeriod)
++    val mid  = log2Ceil(params.uBitPeriod) + log2Ceil(nSets)
++    val high = log2Ceil(params.uBitPeriod) + log2Ceil(nSets) + log2Ceil(nWays)
++    val ubit_cnt       = RegInit(1.U((high).W))
++    val ubit_clear     = ubit_cnt(low - 1, 0) === 0.U
++    val ubit_clear_idx = ubit_cnt(mid - 1, low)
++    val ubit_clear_way = if (nWays > 1) ubit_cnt(high - 1, mid) else 0.U
++    when (!update_valid) { ubit_cnt := ubit_cnt + 1.U }
++    when (!update_valid && ubit_clear) {
++      t.io.update_valid_meta := true.B
++      t.io.update_meta       := 0.U
++      t.io.update_tag        := ubit_clear_idx
++      t.io.update_way        := ubit_clear_way
++    }
++    // the module
++    t
++  }
++  val s2_base_resp = WireInit(0.U.asTypeOf(s2_resp))
++  val random_allocate = RegInit(0.U(log2Ceil(params.baseTableInfo.length + 1).W))
++  when (random_allocate === (params.baseTableInfo.length - 1).U) {
++    random_allocate := 0.U
++  }.otherwise {
++    random_allocate := random_allocate + 1.U
++  }
++  for (w <- 0 until bankWidth) {
++    // find base_provider and altpred
++    var altpred = io.resp_in(0).f2(w).predicted_pc.bits
++    val final_altpred = WireInit(io.resp_in(0).f2(w).predicted_pc.bits)
++    for (i <- 0 until baseP.length) {
++      when (baseP(i).io.s2_resp(w).valid) {
++        s2_base_resp(w)                := baseP(i).io.s2_resp(w)
++        final_altpred                  := altpred
++        s2_meta.base_provider(w).valid := true.B
++        s2_meta.base_provider(w).bits  := i.U
++        s2_meta.base_useful(w)         := baseP(i).io.s2_meta(w)
++        s2_meta.base_plru(w)           := baseP(i).io.s2_plru(w)
++        s2_meta.base_prv_tag           := baseP(i).io.s2_tag
++        s2_meta.base_prv_way(w)        := baseP(i).io.s2_way(w)
++      }
++      altpred = Mux(baseP(i).io.s2_resp(w).valid, baseP(i).io.s2_resp(w).bits, altpred)
++    }
++    // first randomly set the base_allocate (in case all entries are useful)
++    for (i <- 0 until baseP.length) {
++      when (i.U === random_allocate) {
++        s2_meta.base_allocate(w).valid := true.B
++        s2_meta.base_allocate(w).bits  := i.U
++        s2_meta.base_alc_tag           := baseP(i).io.s2_tag
++        s2_meta.base_alc_way(w)        := baseP(i).io.s2_way(w)
++      }
++    }
++    // find not useful entry for allocation
++    for (i <- baseP.length - 1 to 0 by -1) {
++      when ((!s2_meta.base_provider(w).valid || i.U > s2_meta.base_provider(w).bits) && !baseP(i).io.s2_meta(w)) {
++        s2_meta.base_allocate(w).valid := true.B
++        s2_meta.base_allocate(w).bits  := i.U
++        s2_meta.base_alc_tag           := baseP(i).io.s2_tag
++        s2_meta.base_alc_way(w)        := baseP(i).io.s2_way(w)
++      }
++    }
++    s2_meta.base_alt_diff(w) := s2_base_resp(w).bits =/= final_altpred
++    s2_meta.base_hashed(w) := foldMetaResp(s2_base_resp(w).bits)
++  }
++
++  // load value correlation predictor
++  val lvcP = params.lvcTableInfo.zipWithIndex.map { case ((nSets, nWays), i) =>
++    val t = Module(new IndirectBranchPredictionTable(nSets, nWays, params.tagSz, params.lvcCntBits))
++    require(params.tagSz <= loadHistoryWidth)
++    // assign F1 stage inputs for prediction
++    t.io.s1_valid := s1_valid
++    t.io.s1_tag   := fetchIdx(s1_pc)(params.tagSz - 1, 0) ^
++      io.f1_lphist(i * loadHistoryWidth + params.tagSz - 1, i * loadHistoryWidth) ^
++      io.f1_lvhist(i * loadHistoryWidth + params.tagSz - 1, i * loadHistoryWidth)
++    // assign update information
++    val old_cnt = update_meta.lvc_cnt(update_idx)
++    val new_cnt = WireInit(old_cnt)
++    when (update_meta.lvc_hashed(update_idx) === update_folded_target) {
++      val saturated = (1.U << params.lvcCntBits) - 1.U
++      new_cnt := Mux(old_cnt === saturated, saturated, old_cnt + 1.U)
++    }.otherwise {
++      new_cnt := Mux(old_cnt === 0.U, 0.U, old_cnt - 1.U)
++    }
++    val prv = update_meta.lvc_provider(update_idx) === i.U
++    t.io.update_valid_meta := update_valid && prv
++    t.io.update_valid_tag  := update_valid && prv && old_cnt === 0.U
++    t.io.update_tag        := update_meta.lvc_prv_tag
++    t.io.update_way        := update_meta.lvc_prv_way(update_idx)
++    t.io.update_cfi_idx    := update_idx
++    t.io.update_target     := s1_update.bits.target
++    t.io.update_meta       := new_cnt
++    t.io.update_plru       := update_meta.lvc_plru(update_idx)
++    // the module
++    t
++  }
++  val s2_lvhist = VecInit((0 until params.lvcTableInfo.length) map {
++    i => RegNext(io.f1_lvhist((i + 1) * loadHistoryWidth - 1, i * loadHistoryWidth))
++  })
++
++  // lvc predictor response
++  val s2_lvc_resp = WireInit(0.U.asTypeOf(s2_resp))
++  val random_sel = RegInit(0.U(log2Ceil(params.lvcTableInfo.length).W))
++  when (random_sel === (params.lvcTableInfo.length - 1).U) {
++    random_sel := 0.U
++  }.otherwise {
++    random_sel := random_sel + 1.U
++  }
++  for (w <- 0 until bankWidth) {
++    // lvcP with no tag cannot recognize JALR and requires validation of base predictor response
++    when (s2_base_resp(w).valid) {
++      // select randomly in case of no saturated entry
++      for (i <- params.lvcTableInfo.length - 1 to 0 by -1) {
++        when (i.U === random_sel) {
++          s2_meta.lvc_provider(w) := i.U
++          s2_meta.lvc_hashed  (w) := foldMetaResp(lvcP(i).io.s2_resp(w).bits)
++          s2_meta.lvc_cnt     (w) := lvcP(i).io.s2_meta(w)
++          s2_meta.lvc_plru    (w) := lvcP(i).io.s2_plru(w)
++          s2_meta.lvc_prv_tag     := lvcP(i).io.s2_tag
++          s2_meta.lvc_prv_way (w) := lvcP(i).io.s2_way(w)
++        }
++      }
++      // find the latest saturated entry
++      for (i <- params.lvcTableInfo.length - 1 to 0 by -1) {
++        when (s2_lvhist(i) =/= 0.U && lvcP(i).io.s2_meta(w)(params.lvcCntBits - 1) === 1.U) {
++          s2_meta.lvc_provider(w) := i.U
++          s2_meta.lvc_hashed  (w) := foldMetaResp(lvcP(i).io.s2_resp(w).bits)
++          s2_meta.lvc_cnt     (w) := lvcP(i).io.s2_meta(w)
++          s2_meta.lvc_plru    (w) := lvcP(i).io.s2_plru(w)
++          s2_meta.lvc_prv_tag     := lvcP(i).io.s2_tag
++          s2_meta.lvc_prv_way (w) := lvcP(i).io.s2_way(w)
++          s2_lvc_resp         (w) := lvcP(i).io.s2_resp(w)
++        }
++      }
++    }
++  }
++
++  // assign responses
 +  io.f3_meta := RegNext(s2_meta).asUInt
 +  for (w <- 0 until bankWidth) {
-+    when (RegNext(t.io.s2_resp(w).valid)) {
-+      io.resp.f3(w).predicted_pc := RegNext(t.io.s2_resp(w))
++    s2_resp(w) := Mux(s2_lvcsel && s2_lvc_resp(w).valid, s2_lvc_resp(w), s2_base_resp(w))
++    when (RegNext(s2_resp(w).valid)) {
++      io.resp.f3(w).predicted_pc := RegNext(s2_resp(w))
 +    }
 +  }
 +
@@ -570,31 +853,39 @@ index 00000000..aa4fd59a
 +  val mems = Nil
 +}
 diff --git a/src/main/scala/ifu/bpd/predictor.scala b/src/main/scala/ifu/bpd/predictor.scala
-index f176c8df..2ad7448e 100644
+index f176c8df..6e3a7fb6 100644
 --- a/src/main/scala/ifu/bpd/predictor.scala
 +++ b/src/main/scala/ifu/bpd/predictor.scala
-@@ -144,6 +144,7 @@ abstract class BranchPredictorBank(implicit p: Parameters) extends BoomModule()(
+@@ -144,6 +144,9 @@ abstract class BranchPredictorBank(implicit p: Parameters) extends BoomModule()(
      // Local history not available until end of f1
      val f1_ghist = Input(UInt(globalHistoryLength.W))
      val f1_lhist = Input(UInt(localHistoryLength.W))
 +    val f1_phist = Input(UInt((indirectHistoryLength * indirectHistoryWidth).W))
++    val f1_lphist = Input(UInt((loadHistoryLength * loadHistoryWidth).W))
++    val f1_lvhist = Input(UInt((loadHistoryLength * loadHistoryWidth).W))
  
      val resp_in = Input(Vec(nInputs, new BranchPredictionBankResponse))
      val resp = Output(new BranchPredictionBankResponse)
-@@ -238,6 +239,7 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
+@@ -238,6 +241,9 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
  
      banked_predictors(0).io.f1_ghist := RegNext(io.f0_req.bits.ghist.histories(0))
      banked_predictors(0).io.f1_lhist := banked_lhist_providers(0).io.f1_lhist
 +    banked_predictors(0).io.f1_phist := RegNext(io.f0_req.bits.ghist.path_history)
++    banked_predictors(0).io.f1_lphist := RegNext(io.f0_req.bits.ghist.load_pc_history)
++    banked_predictors(0).io.f1_lvhist := RegNext(io.f0_req.bits.ghist.load_val_history)
  
      banked_predictors(0).io.resp_in(0)           := (0.U).asTypeOf(new BranchPredictionBankResponse)
    } else {
-@@ -249,6 +251,9 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
+@@ -249,6 +255,13 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
      banked_predictors(0).io.f1_lhist := banked_lhist_providers(0).io.f1_lhist
      banked_predictors(1).io.f1_lhist := banked_lhist_providers(1).io.f1_lhist
  
 +    banked_predictors(0).io.f1_phist  := RegNext(io.f0_req.bits.ghist.path_history)
 +    banked_predictors(1).io.f1_phist  := RegNext(io.f0_req.bits.ghist.path_history)
++    banked_predictors(0).io.f1_lphist := RegNext(io.f0_req.bits.ghist.load_pc_history)
++    banked_predictors(1).io.f1_lphist := RegNext(io.f0_req.bits.ghist.load_pc_history)
++    banked_predictors(0).io.f1_lvhist := RegNext(io.f0_req.bits.ghist.load_val_history)
++    banked_predictors(1).io.f1_lvhist := RegNext(io.f0_req.bits.ghist.load_val_history)
 +
      when (bank(io.f0_req.bits.pc) === 0.U) {
        banked_lhist_providers(0).io.f0_valid := io.f0_req.valid
@@ -671,19 +962,22 @@ index 5af74617..b452e6e7 100644
      ram(RegNext(io.redirect.bits)) := RegNext(redirect_new_entry)
    }
 diff --git a/src/main/scala/ifu/frontend.scala b/src/main/scala/ifu/frontend.scala
-index 17bf3b2e..258370ee 100644
+index 17bf3b2e..e6c89007 100644
 --- a/src/main/scala/ifu/frontend.scala
 +++ b/src/main/scala/ifu/frontend.scala
-@@ -57,6 +57,8 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
+@@ -57,6 +57,11 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
  
    val ras_idx = UInt(log2Ceil(nRasEntries).W)
  
 +  val path_history = UInt((indirectHistoryLength * indirectHistoryWidth).W)
 +
++  val load_pc_history = UInt((loadHistoryLength * loadHistoryWidth).W)
++  val load_val_history = UInt((loadHistoryLength * loadHistoryWidth).W)
++
    def histories(bank: Int) = {
      if (nBanks == 1) {
        old_history
-@@ -75,14 +77,16 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
+@@ -75,14 +80,16 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
    def ===(other: GlobalHistory): Bool = {
      ((old_history === other.old_history) &&
       (new_saw_branch_not_taken === other.new_saw_branch_not_taken) &&
@@ -702,7 +996,7 @@ index 17bf3b2e..258370ee 100644
      val cfi_idx_fixed = cfi_idx(log2Ceil(fetchWidth)-1,0)
      val cfi_idx_oh = UIntToOH(cfi_idx_fixed)
      val new_history = Wire(new GlobalHistory)
-@@ -123,6 +127,10 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
+@@ -123,6 +130,10 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
      }
      new_history.ras_idx := Mux(cfi_valid && cfi_is_call, WrapInc(ras_idx, nRasEntries),
                             Mux(cfi_valid && cfi_is_ret , WrapDec(ras_idx, nRasEntries), ras_idx))
@@ -713,9 +1007,13 @@ index 17bf3b2e..258370ee 100644
      new_history
    }
  
-@@ -286,6 +294,11 @@ class BoomFrontendIO(implicit p: Parameters) extends BoomBundle
+@@ -285,7 +296,15 @@ class BoomFrontendIO(implicit p: Parameters) extends BoomBundle
+ 
    val flush_icache = Output(Bool())
  
++  val load_pc_history = Output(UInt((loadHistoryLength * loadHistoryWidth).W))
++  val load_val_history = Output(UInt((loadHistoryLength * loadHistoryWidth).W))
++
    val perf = Input(new FrontendPerfEvents)
 +
 +  val tperf = Input(new Bundle {
@@ -725,7 +1023,7 @@ index 17bf3b2e..258370ee 100644
  }
  
  /**
-@@ -799,7 +812,9 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
+@@ -799,7 +818,9 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
      f3_fetch_bundle.cfi_idx.valid,
      f3_fetch_bundle.pc,
      f3_fetch_bundle.cfi_is_call,
@@ -736,7 +1034,13 @@ index 17bf3b2e..258370ee 100644
    )
  
  
-@@ -985,6 +1000,46 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
+@@ -982,9 +1003,52 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
+     ftq.io.redirect.bits  := io.cpu.redirect_ftq_idx
+   }
+ 
++  s0_ghist.load_pc_history := io.cpu.load_pc_history
++  s0_ghist.load_val_history := io.cpu.load_val_history
++
    ftq.io.debug_ftq_idx := io.cpu.debug_ftq_idx
    io.cpu.debug_fetch_pc := ftq.io.debug_fetch_pc
  

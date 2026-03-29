@@ -13,7 +13,7 @@
 int main()
 {
     const int bhlen = 16;
-    const int phlen = 2, phmax = 8, phsz = 16;
+    const int phlen = 2, phmax = 16, phsz = 16;
     const int nsets = 128;
     const int nways = 2;
     const int tagsz = 16;
@@ -105,13 +105,13 @@ int main()
             ++prd;
             unsigned long pc, ghist, phist[phmax], pred, ghist_unspec;
             LOCATE(':');
-            if (p - 2 > line && STR_EQL(p - 5, "f2_pc"))
+            if (p - 2 > line && STR_EQL(p - 5, "f3_pc"))
                 pc = strtoul(++p, &p, 16);
             LOCATE(':');
-            if (p - 6 > line && STR_EQL(p - 8, "f2_ghist"))
+            if (p - 6 > line && STR_EQL(p - 8, "f3_ghist"))
                 ghist = strtoul(++p, &p, 16);
             LOCATE(':');
-            if (p - 6 > line && STR_EQL(p - 8, "f2_phist"))
+            if (p - 6 > line && STR_EQL(p - 8, "f3_phist"))
                 for (int i = 0; i < phmax; i++)
                     phist[i] = strtoul(++p, &p, 16);
             LOCATE(':');
