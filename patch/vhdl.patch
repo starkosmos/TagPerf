@@ -1,3 +1,18 @@
+diff --git a/src/main/scala/rocket.scala b/src/main/scala/rocket.scala
+index adef77a..7b4380d 100644
+--- a/src/main/scala/rocket.scala
++++ b/src/main/scala/rocket.scala
+@@ -334,8 +334,8 @@ class Rocket64w1 extends Config(
+   new RocketBaseConfig)
+ 
+ class Rocket64x1 extends Config(
+-  new WithInclusiveCache  ++
+-  new WithNBreakpoints(8) ++
++  // new WithInclusiveCache  ++
++  // new WithNBreakpoints(8) ++
+   new boom.common.WithNMediumBooms(1) ++
+   new RocketWideBusConfig)
+ 
 diff --git a/vhdl-wrapper/src/net/largest/riscv/vhdl/Main.java b/vhdl-wrapper/src/net/largest/riscv/vhdl/Main.java
 index 6236932..65bfca6 100644
 --- a/vhdl-wrapper/src/net/largest/riscv/vhdl/Main.java
