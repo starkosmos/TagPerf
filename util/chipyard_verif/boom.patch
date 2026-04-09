@@ -460,10 +460,10 @@ index acd3ade8..d62bba94 100644
        metas = (metas << c.metaSz) | c.io.f3_meta(c.metaSz-1,0)
 diff --git a/src/main/scala/v3/ifu/bpd/ibp.scala b/src/main/scala/v3/ifu/bpd/ibp.scala
 new file mode 100644
-index 00000000..bc836208
+index 00000000..b72c4b32
 --- /dev/null
 +++ b/src/main/scala/v3/ifu/bpd/ibp.scala
-@@ -0,0 +1,525 @@
+@@ -0,0 +1,532 @@
 +package boom.v3.ifu
 +
 +import chisel3._
@@ -488,9 +488,9 @@ index 00000000..bc836208
 +  ),
 +  // nSets, nWays
 +  lvcTableInfo: Seq[(Int, Int)] = Seq.fill(16)((16, 2)),
-+  tagSz: Int = 11,
++  tagSz: Int = 16,
 +  regionNum: Int = 16,
-+  regionOffsetBits: Int = 16,
++  regionOffsetBits: Int = 24,
 +  maxWays: Int = 8,
 +  uBitPeriod: Int = 2048,
 +  selSets: Int = 256,
@@ -500,7 +500,7 @@ index 00000000..bc836208
 +)
 +
 +class IndirectBranchPredictionTable(
-+  override val nSets: Int, override val nWays: Int, val tagSz: Int, val metaSz: Int
++  override val nSets: Int, override val nWays: Int, val tagSz: Int, val metaSz: Int, val targetSz: Int
 +)(implicit p: Parameters) extends BoomModule()(p) with HasBoomFrontendParameters
 +{
 +  val io = IO(new Bundle {
@@ -513,8 +513,8 @@ index 00000000..bc836208
 +    val update_plru       = Input(UInt(nWays.W))
 +    val update_tag        = Input(UInt(tagSz.W))
 +    val update_way        = Input(UInt(log2Ceil(nWays).W))
-+    val update_target     = Input(UInt(vaddrBitsExtended.W))
-+    val s2_resp           = Output(Vec(bankWidth, Valid(UInt(vaddrBitsExtended.W))))
++    val update_target     = Input(UInt(targetSz.W))
++    val s2_resp           = Output(Vec(bankWidth, Valid(UInt(targetSz.W))))
 +    val s2_meta           = Output(Vec(bankWidth, UInt(metaSz.W)))
 +    val s2_plru           = Output(Vec(bankWidth, UInt(nWays.W)))
 +    val s2_tag            = Output(UInt(tagSz.W))
@@ -557,7 +557,7 @@ index 00000000..bc836208
 +
 +  // memory structure
 +  val tags = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(tagSz.W))) }
-+  val ibtb = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(vaddrBitsExtended.W))) }
++  val ibtb = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(targetSz.W))) }
 +  val meta = Seq.fill(nWays) { SyncReadMem(nSets, Vec(bankWidth, UInt(metaSz.W))) }
 +  val plru = SyncReadMem(nSets, Vec(bankWidth, UInt(nWays.W)))
 +
@@ -565,7 +565,7 @@ index 00000000..bc836208
 +  val s1_req_idx = foldTag2Idx(io.s1_tag)
 +  val s2_req_tag = RegNext(io.s1_tag)
 +  val s2_req_ribtb = VecInit(ibtb.map { b =>
-+    VecInit(b.read(s1_req_idx, io.s1_valid).map(_.asTypeOf(UInt(vaddrBitsExtended.W))))
++    VecInit(b.read(s1_req_idx, io.s1_valid).map(_.asTypeOf(UInt(targetSz.W))))
 +  })
 +  val s2_req_rtags = VecInit(tags.map { t =>
 +    VecInit(t.read(s1_req_idx, io.s1_valid).map(_.asTypeOf(UInt(tagSz.W))))
@@ -610,7 +610,7 @@ index 00000000..bc836208
 +      val meta_mask = Mux(doing_reset, ~(0.U(bankWidth.W)), update_wmeta_mask).asBools
 +      val ibtb_wdat = Mux(
 +        doing_reset,
-+        VecInit(Seq.fill(bankWidth) { 0.U(vaddrBitsExtended.W) }),
++        VecInit(Seq.fill(bankWidth) { 0.U(targetSz.W) }),
 +        VecInit(Seq.fill(bankWidth) { io.update_target })
 +      )
 +      val tags_wdat = Mux(
@@ -662,9 +662,11 @@ index 00000000..bc836208
 +    val lvc_prv_way   = Vec(bankWidth, Output(UInt(log2Ceil(params.maxWays).W)))
 +  }
 +
++  val targetSz = log2Ceil(params.regionNum) + params.regionOffsetBits
++
 +  def foldMetaResp(bits: UInt): UInt = {
-+    ((0 until (vaddrBitsExtended + params.metaRespBits - 1) / params.metaRespBits) map {
-+      i => bits(min((i + 1) * params.metaRespBits, vaddrBitsExtended) - 1, i * params.metaRespBits)
++    ((0 until (targetSz + params.metaRespBits - 1) / params.metaRespBits) map {
++      i => bits(min((i + 1) * params.metaRespBits, targetSz) - 1, i * params.metaRespBits)
 +    }).reduce(_^_)
 +  }
 +
@@ -710,14 +712,14 @@ index 00000000..bc836208
 +  s1_update_region := region_allocate
 +  // find hit entry
 +  when (update_valid) {
-+    val hit_ohs = VecInit(region_base.map {
-+      base => base === s1_update.bits.target >> params.regionOffsetBits
++    val hit_ohs = VecInit(region_base.map { base =>
++      base === s1_update.bits.target >> params.regionOffsetBits
 +    })
 +    val hit = hit_ohs.reduce(_||_)
 +    val hit_idx = PriorityEncoder(hit_ohs)
 +    when (hit) {
 +      s1_update_region := hit_idx
-+    }.otherwise {
++    }.elsewhen (s1_update.bits.cfi_mispredicted) {
 +      region_base(region_allocate) := s1_update.bits.target >> params.regionOffsetBits
 +    }
 +    region_plru := pLRUNext(region_plru, s1_update_region, params.regionNum)
@@ -727,7 +729,7 @@ index 00000000..bc836208
 +  val sel = SyncReadMem(params.selSets, UInt(params.selBits.W))
 +  val update_sel_old = update_meta.lvc_selcnt
 +  val update_sel_new = WireInit(update_sel_old)
-+  val update_folded_target = foldMetaResp(s1_update.bits.target)
++  val update_folded_target = foldMetaResp(Cat(s1_update_region, s1_update_offset))
 +  when (
 +    update_meta.lvc_hashed (update_idx) === update_folded_target &&
 +    update_meta.base_hashed(update_idx) =/= update_folded_target
@@ -752,13 +754,13 @@ index 00000000..bc836208
 +  }
 +
 +  // responses
-+  val s2_resp = Wire(Vec(bankWidth, Valid(UInt(vaddrBitsExtended.W))))
++  val s2_resp = Wire(Vec(bankWidth, Valid(UInt(targetSz.W))))
 +  val s2_meta = WireInit(0.U.asTypeOf(new IBTBPredictMeta))
 +  s2_meta.lvc_selcnt := sel.read(fetchIdx(s1_pc), s1_valid)
 +
 +  // base predictor
 +  val baseP = params.baseTableInfo.zipWithIndex.map { case ((bhLen, phLen, nSets, nWays), i) =>
-+    val t = Module(new IndirectBranchPredictionTable(nSets, nWays, params.tagSz, 1))
++    val t = Module(new IndirectBranchPredictionTable(nSets, nWays, params.tagSz, 1, targetSz))
 +    // calculate folded path history
 +    require(bhLen        <= globalHistoryLength)
 +    require(phLen        <= indirectHistoryLength)
@@ -790,7 +792,7 @@ index 00000000..bc836208
 +    t.io.update_tag        := Mux(prv, update_meta.base_prv_tag, update_meta.base_alc_tag)
 +    t.io.update_way        := Mux(prv, update_meta.base_prv_way(update_idx), update_meta.base_alc_way(update_idx))
 +    t.io.update_cfi_idx    := update_idx
-+    t.io.update_target     := s1_update.bits.target
++    t.io.update_target     := Cat(s1_update_region, s1_update_offset)
 +    t.io.update_plru       := update_meta.base_plru(update_idx)
 +    t.io.update_meta       := Mux(s1_update.bits.cfi_mispredicted,
 +      0.U, Mux(update_meta.base_alt_diff(update_idx), 1.U, update_meta.base_useful(update_idx))
@@ -861,7 +863,7 @@ index 00000000..bc836208
 +
 +  // load value correlation predictor
 +  val lvcP = params.lvcTableInfo.zipWithIndex.map { case ((nSets, nWays), i) =>
-+    val t = Module(new IndirectBranchPredictionTable(nSets, nWays, params.tagSz, params.lvcCntBits))
++    val t = Module(new IndirectBranchPredictionTable(nSets, nWays, params.tagSz, params.lvcCntBits, targetSz))
 +    require(params.tagSz <= loadHistoryWidth)
 +    // assign F1 stage inputs for prediction
 +    t.io.s1_valid := s1_valid
@@ -883,7 +885,7 @@ index 00000000..bc836208
 +    t.io.update_tag        := update_meta.lvc_prv_tag
 +    t.io.update_way        := update_meta.lvc_prv_way(update_idx)
 +    t.io.update_cfi_idx    := update_idx
-+    t.io.update_target     := s1_update.bits.target
++    t.io.update_target     := Cat(s1_update_region, s1_update_offset)
 +    t.io.update_meta       := new_cnt
 +    t.io.update_plru       := update_meta.lvc_plru(update_idx)
 +    // the module
@@ -939,6 +941,11 @@ index 00000000..bc836208
 +    )
 +    when (RegNext(s2_resp(w).valid)) {
 +      io.resp.f3(w).predicted_pc := RegNext(s2_resp(w))
++      io.resp.f3(w).predicted_pc.valid := true.B
++      io.resp.f3(w).predicted_pc.bits := RegNext(Cat(
++        region_base(s2_resp(w).bits(targetSz - 1, params.regionOffsetBits)),
++        s2_resp(w).bits(params.regionOffsetBits - 1, 0)
++      ))
 +    }
 +  }
 +
@@ -991,10 +998,10 @@ index 00000000..bc836208
 +}
 diff --git a/src/main/scala/v3/ifu/bpd/lvcp.scala b/src/main/scala/v3/ifu/bpd/lvcp.scala
 new file mode 100644
-index 00000000..7cd9966c
+index 00000000..1a42117a
 --- /dev/null
 +++ b/src/main/scala/v3/ifu/bpd/lvcp.scala
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,337 @@
 +package boom.v3.ifu
 +
 +import chisel3._
@@ -1211,9 +1218,6 @@ index 00000000..7cd9966c
 +      update_meta.h2pcnt(update_idx)(params.h2pCntBits - 1) === 0.U && s1_update.bits.cfi_mispredicted
 +    )
 +  ) {
-+    printf("[h2p update] pc: %x old: %d new: %d     %x %x\n",
-+      s1_update.bits.pc, update_h2p_old, update_h2p_new,
-+      update_meta.prev_taken(update_idx), s1_update.bits.cfi_taken)
 +    h2p_cnt.write(
 +      Mux(doing_reset, reset_idx, fetchIdx(s1_update.bits.pc)),
 +      Mux(
@@ -1272,10 +1276,6 @@ index 00000000..7cd9966c
 +    t.io.update_cnt        := new_cnt
 +    t.io.update_meta       := new_u
 +    t.io.update_plru       := update_meta.plru(update_idx)
-+    when (t.io.update_valid_meta) {
-+      printf("[lvc update] pc: %x  tag: %x  cnt: %d  useful: %d  provider: %d\n",
-+        s1_update.bits.pc, update_meta.prv_tag, new_cnt, new_u, i.U)
-+    }
 +    // the module
 +    t
 +  }
@@ -1321,10 +1321,6 @@ index 00000000..7cd9966c
 +        s2_meta.prv_way (w) := lvcP(i).io.s2_way(w)
 +        when (s2_meta.h2pcnt(w)(params.h2pCntBits - 1)) {
 +          s2_resp(w) := lvcP(i).io.s2_resp(w)
-+        }
-+        when (s2_resp(w).valid & s2_meta.h2pcnt(w)(params.h2pCntBits - 1)) {
-+          printf("[lvc predict] pc: %x  tag: %x  cnt: %x  h2pcnt: %d\n",
-+            RegNext(s1_pc), s2_meta.prv_tag, s2_resp(w).bits, s2_meta.h2pcnt(w))
 +        }
 +      }
 +    }
